@@ -3,9 +3,9 @@ from collections import namedtuple
 def attribute(device):
 
     dataset_name = 'LGES_sample'
-    n_epochs = 50
+    n_epochs = 500
     latent_size = 128
-    pre_accumulation_steps = 100
+    pre_accumulation_steps = 20
 
     message_passing_steps = 10
 
@@ -14,10 +14,10 @@ def attribute(device):
     test_length = 293
     test_sequence_idx = 5
 
-    ds_path = 'C:/Projects/GNN_Particle_Sim_1'
-    training_path = '/training_40_/train/'
-    testing_path = '/training_40_/test/'
-    calculix_path = '/deforming_plate_calculix/'
+    ds_path = "/home/ssdl/PJW/Particle_Simulation/training_40_/"
+    training_path = "train/"
+    testing_path = "test/"
+    calculix_path = "/home/ssdl/PJW/Particle_Simulation/calculix/"
 
     training_noise = 0.0003
     contact_distance = 0.75

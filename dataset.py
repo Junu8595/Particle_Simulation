@@ -1,5 +1,4 @@
 import torch
-import tensorflow as tf
 from torch.utils.data.dataset import Dataset
 import numpy as np
 from collections import namedtuple
@@ -8,6 +7,8 @@ from dataclasses import replace as dc_replace
 import os
 import graph_builder
 from sklearn import neighbors
+
+
 
 @dataclass(frozen=False)
 class RawDataPack:
@@ -39,6 +40,32 @@ class RawDataPack:
         for field in self.__dataclass_fields__:
             data = getattr(self, field)
             setattr(self, field, data.to(device))
+
+NodePack = namedtuple(
+          'nodepack',
+            ['node_features', 'particle_indices', 'next_particle_indices',
+            'hopper_indices', 'roller1_indices', 'roller2_indices']
+        )
+EdgePack = namedtuple(
+    'edgepack',
+[
+    'edge_features',
+    'receivers',
+    'senders',
+    'edge_a',
+    'edge_b',
+    'edge_c',
+    'reverse_edge_idx',
+    'pairwise_mask',
+    'b_degenerate_mask',
+    'c_degenerate_mask'
+]
+)
+TargetPack = namedtuple(
+    'targetpack',
+    ['normalized_target', 'target_acc', 'target_vel', 'target_pos']
+    )
+DataPack = namedtuple('datapack', ['nodepack', 'edgepack', 'targetpack'])
 
 class gns_dataset(Dataset):
     def __init__(self, dataset_properties_packs, normalizer_packs, device):
@@ -145,13 +172,14 @@ class gns_dataset(Dataset):
 
         datapack = self.dataset[file_idx]
 
-        cells_data = datapack[0] # (N_E, 3)
-        mesh_pos_data = datapack[1]
-        particle_pos_data = datapack[2] # (T, N, 3)
-        mesh_node_type_data = datapack[3] # (T, N_E)
-        particle_id_data = datapack[4] # (T, N_P) particle이 domain내에 존재하는지 안하는지
+        # 모든 데이터를 self.device로 이동
+        cells_data = datapack[0].to(self.device) # (N_E, 3)
+        mesh_pos_data = datapack[1].to(self.device)
+        particle_pos_data = datapack[2].to(self.device) # (T, N, 3)
+        mesh_node_type_data = datapack[3].to(self.device) # (T, N_E)
+        particle_id_data = datapack[4].to(self.device) # (T, N_P) particle이 domain내에 존재하는지 안하는지
 
-        cells_indicies = torch.tensor(range(cells_data.shape[0]))
+        cells_indicies = torch.tensor(range(cells_data.shape[0]), device=self.device)
         cells = torch.hstack((cells_indicies[:, None], cells_data))
 
         mesh_node_type = mesh_node_type_data.clone().float()
@@ -393,11 +421,6 @@ class gns_dataset(Dataset):
         node_features = torch.hstack((vel, node_type, norm))
         node_features = self.node_normalizer(node_features, accumulate=True)
 
-        NodePack = namedtuple(
-          'nodepack',
-            ['node_features', 'particle_indices', 'next_particle_indices',
-            'hopper_indices', 'roller1_indices', 'roller2_indices']
-        )
         nodepack = NodePack(
             node_features,
             particle_indices,
@@ -407,21 +430,8 @@ class gns_dataset(Dataset):
             roller2_indices
          )
 
-        EdgePack = namedtuple(
-            'edgepack',
-        [
-            'edge_features',
-            'receivers',
-            'senders',
-            'edge_a',
-            'edge_b',
-            'edge_c',
-            'reverse_edge_idx',
-            'pairwise_mask',
-            'b_degenerate_mask',
-            'c_degenerate_mask'
-        ]
-         )
+        
+    
         edgepack = EdgePack(
             edge_features,
          receivers,
@@ -435,10 +445,6 @@ class gns_dataset(Dataset):
          c_degenerate_mask
          )
 
-        TargetPack = namedtuple(
-         'targetpack',
-         ['normalized_target', 'target_acc', 'target_vel', 'target_pos']
-         )
         
         targetpack = TargetPack(
          normalized_target,
@@ -447,7 +453,6 @@ class gns_dataset(Dataset):
          target_pos
          )
 
-        DataPack = namedtuple('datapack', ['nodepack', 'edgepack', 'targetpack'])
         datapack = DataPack(nodepack, edgepack, targetpack)
 
         return datapack
@@ -515,10 +520,11 @@ class gns_dataset(Dataset):
         return updated_vel, updated_prev_pos, updated_pos, updated_acc
     
     def update_raw_data(self, raw_data_pack, updated_vel, updated_prev_pos, updated_pos, updated_acc):
-        raw_data_pack = dc_replace(raw_data_pack, particle_vel = updated_vel.clone())
-        raw_data_pack = dc_replace(raw_data_pack, prev_particle_pos = updated_prev_pos.clone())
-        raw_data_pack = dc_replace(raw_data_pack, particle_pos = updated_pos.clone())
-        raw_data_pack = dc_replace(raw_data_pack, acc = updated_acc.clone())
+        device = raw_data_pack.particle_pos.device
+        raw_data_pack = dc_replace(raw_data_pack, particle_vel = updated_vel.clone().to(device))
+        raw_data_pack = dc_replace(raw_data_pack, prev_particle_pos = updated_prev_pos.clone().to(device))
+        raw_data_pack = dc_replace(raw_data_pack, particle_pos = updated_pos.clone().to(device))
+        raw_data_pack = dc_replace(raw_data_pack, acc = updated_acc.clone().to(device))
         return raw_data_pack
     
     def update_data(self, raw_data, contact_distance):
@@ -667,3 +673,6 @@ class gns_dataset(Dataset):
         mesh_mask = self.get_intersecting_mesh_mask(raw_data_pack, xbound_pad, ybound_pad, zbound_pad)
 
         return self.slice_datapack(raw_data_pack, particle_mask, mesh_mask)
+    
+    def __getitem__(self, idx):
+            return self.get_data(idx, self.contact_distance, False)

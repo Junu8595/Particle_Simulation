@@ -25,10 +25,28 @@ class Graph():
         self.decode = self.decoder
 
 
-    def forward(self,datapack, train_flag = True, grid_flag = False):
+    def forward_single(self, datapack, train_flag = True, grid_flag = False):
+        """단일 그래프 샘플 처리"""
         self.encode(datapack)
         self.process(self.message_passing_steps)
         return self.decode(datapack.targetpack, train_flag, grid_flag)
+    
+    def forward(self, datapack_or_list, train_flag = True, grid_flag = False):
+        """단일 또는 배치 처리 지원"""
+        # 배치인 경우 (리스트)
+        if isinstance(datapack_or_list, list):
+            loss_list = []
+            for datapack in datapack_or_list:
+                _, loss = self.forward_single(datapack, train_flag, grid_flag)
+                loss_list.append(loss)
+            
+            # 배치 내 손실 평균
+            avg_loss_0 = sum(l[0] for l in loss_list) / len(loss_list)
+            avg_loss_1 = sum(l[1] for l in loss_list) / len(loss_list) if len(loss_list[0]) > 1 else 0
+            return None, [avg_loss_0, avg_loss_1]
+        else:
+            # 단일 샘플
+            return self.forward_single(datapack_or_list, train_flag, grid_flag)
 
     def encoder(self, datapack):
         self.next_particle_indices = datapack.nodepack.next_particle_indices

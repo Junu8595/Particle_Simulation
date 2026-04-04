@@ -1,11 +1,12 @@
 import torch
+from torch.utils.data import DataLoader
 import numpy as np
 
 import os
 from datetime import datetime
 
 import copy
-
+from torch.utils.data import DataLoader
 import graph_model as gm
 import dataset
 import graph_utils as utils
@@ -23,7 +24,6 @@ import cv2
 import random
 
 seed = 7777
-torch.cuda.init()
 torch.backends.cudnn.benchmark = True
 torch.manual_seed(seed); np.random.seed(seed); random.seed(seed)
 torch.cuda.manual_seed_all(seed)
@@ -55,7 +55,8 @@ X_BOUND = [-50, 50]
 Y_BOUND = [-50, 50]
 Z_BOUND = [0, 100]
 
-# torch.set_default_tensor_type('torch.cuda.FloatTensor')
+# torch.set_default_tensor_type('torch.cuda.FloatTensor')를 피함 - DataLoader sampler 충돌 방지
+# 대신 dataset.py의 get_raw_data에서 모든 데이터를 명시적으로 device로 이동
 network_attributes_pack, training_attributes_pack = attr.attribute(device)
 
 training_parameters_pack, testing_parameters_pack, data_parameters_pack, optimizer_parameters_pack = training_attributes_pack
@@ -207,7 +208,8 @@ normalizer_pack = [node_normalizer, edge_normalizer, target_normalizer]
 def pre_accumulation(i, data_set : dataset.gns_dataset):
     if i % 10 == 0:
         print(i, "step")
-    _ = data_set.get_data(i, contact_distance, rotate_flag)
+    # ✅ DataLoader를 쓰기 위해 get_data 대신 직접 index로 접근합니다.
+    _ = data_set[i]
 
 def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
 
@@ -226,8 +228,7 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
         for norm in normalizer_pack:
             norm.load_normalizer(test_network_path)
 
-    
-    data_set.shuffle()
+        
     
     if fresh_start:
 
@@ -246,47 +247,65 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
     t0 = datetime.now()
     loss_list = []
 
+    batch_size = 4  # 배치 사이즈 증가로 GPU 활용도 높임
+    num_workers = 2  # 데이터 로딩/전처리를 비동기로 수행
+    
+    def collate_fn(batch):
+        # batch는 리스트이고 각 요소는 get_data()의 결과 (namedtuple DataPack)
+        # batch_size > 1일 때 리스트를 그대로 유지하여 Graph.forward가 배치 처리하도록 함
+        return batch
+    
+    train_loader = DataLoader(
+        data_set,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+    )
+
+    step = 0
+
     for epoch in range(nepochs):
 
         print("Start epoch")
-        data_set.shuffle()
 
-        for i in range(dataset_length):
+        for i, data_pack in enumerate(train_loader):
 
-            if (i) % test_interval == 0 and epoch % 100 == 0:
+            if step % test_interval == 0 and epoch % 100 == 0:
                 with torch.no_grad():
                     test_cycle(test_set, graph)
 
             graph.zero_grad()
 
-            lr_decay = lr_decay_calculator.get_lrd(i, epoch)
+            lr_decay = lr_decay_calculator.get_lrd(step % dataset_length, epoch)
 
             graph.set_lr(lr * lr_decay)
 
-            data_pack = data_set.get_data(i, contact_distance, rotate_flag)
-
+            # 배치 처리 (len(data_pack) = batch_size)
             _, loss = graph.forward(data_pack)
 
-            loss_list.append(loss)
+            loss_list.append(loss[0])
 
             lr_decay_calculator.update_iterator()
 
             graph.train_step(grad_limit)
 
-            if i % 10 == 0:
+            step += 1
+
+            if step % 10 == 0:
                 log_text = ("Epochs : " + str(epoch) + 
-                            " - Iter : " + str(i) + '/' + str(dataset_length) + 
+                            " - Step : " + str(step) + 
                             " - Loss : " + str('%.8f' % loss[0]) + 
                             " - Abs Loss : " + str('%.8f' % loss[1]) + 
                             " - Lr : " + str('%.8f' % graph.graph_optimizer.param_groups[0]['lr']))
                 print(log_text)
 
-                if (i%100 == 0):
+                if (step % 100 == 0):
                     with open(saving_path + 'log_' + time + '.txt', 'a') as log_file:
                         log_file.write(log_text + '\n')
                         log_file.write('Time : ' + str(datetime.now()) + '\n')
 
-                if i % monitor_interval == 0:
+                if step % monitor_interval == 0:
                     torch.save(graph.graph_net, saving_path + 'graph_network.pt')
 
                     for norm in normalizer_pack:
@@ -350,7 +369,7 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
 
     raw_data_container = [test_set.get_raw_data(i) for i in range(sequence_length)]
 
-    target_sequence = [test_set.return_target_sequence(raw_data)[None,:,:] for raw_data in raw_data_container]
+    target_sequence = [test_set.return_target_sequence(raw_data)[None,:,:].detach().cpu() for raw_data in raw_data_container]
 
     updated_prev_pos = None
     updated_pos = None
@@ -371,7 +390,7 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
     loss_list = []
     loss_abs_list = []
 
-    pred_particle_id = raw_data_container[0].particle_id.clone()
+    pred_particle_id = raw_data_container[0].particle_id.clone().to(test_set.device)
     if pred_particle_id.ndim == 2 and pred_particle_id.shape[-1] == 1:
         pred_particle_id = pred_particle_id.squeeze(-1)
     pred_particle_id = pred_particle_id.bool()
@@ -382,6 +401,8 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
             raw_data_pack = raw_data_container[i]
         else:
             raw_data_pack = raw_data_container[-1]
+
+        raw_data_pack.todevice(test_set.device)
 
         if one_step_flag == True or updated_pos == None:
             updated_vel, updated_prev_pos, updated_pos, updated_acc = test_set.data_from_test_set(raw_data_pack)
@@ -496,7 +517,7 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
 
         updated_prev_pos, updated_pos, updated_vel, updated_acc = test_set.update_test_data(raw_data_pack, updated_prev_pos, updated_pos, updated_vel, updated_acc, pos_prediction, vel_prediction, acc_prediction)
 
-        prediction_sequence.append(torch.cat((updated_pos, updated_vel[:,-3:], updated_acc, raw_data_pack.particle_id.unsqueeze(-1).to(updated_pos.device)), dim = 1)[None, :, :])
+        prediction_sequence.append(torch.cat((updated_pos.detach().cpu(), updated_vel[:,-3:].detach().cpu(), updated_acc.detach().cpu(), raw_data_pack.particle_id.unsqueeze(-1).cpu()), dim = 1)[None, :, :])
 
         print("Test Cycle : ", datetime.now() - t1)
 
@@ -574,7 +595,7 @@ def grid_test_cycle(test_set, graph, plot_flag, test_sequence_idx, max_particles
 
     raw_data_container = [test_set.get_raw_data(i) for i in range(sequence_length)]
 
-    target_sequence = [test_set.return_target_sequence(raw_data)[None,:,:] for raw_data in raw_data_container]
+    target_sequence = [test_set.return_target_sequence(raw_data)[None,:,:].detach().cpu() for raw_data in raw_data_container]
 
     updated_prev_pos = None
     updated_pos = None
