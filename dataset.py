@@ -155,7 +155,7 @@ class gns_dataset(Dataset):
     def get_data(self, idx, contact_distance, rotate_flag):
         with torch.no_grad():
             raw_data = self.get_raw_data(idx)
-            raw_data.todevice(self.device)
+            # ✅ GPU로 보내는 코드를 제거하고, CPU 상태로 graph_data를 만듭니다.
             return self.graph_data(contact_distance, raw_data, rotate_flag)
 
     def get_raw_data(self, idx):
@@ -172,14 +172,14 @@ class gns_dataset(Dataset):
 
         datapack = self.dataset[file_idx]
 
-        # 모든 데이터를 self.device로 이동
-        cells_data = datapack[0].to(self.device) # (N_E, 3)
-        mesh_pos_data = datapack[1].to(self.device)
-        particle_pos_data = datapack[2].to(self.device) # (T, N, 3)
-        mesh_node_type_data = datapack[3].to(self.device) # (T, N_E)
-        particle_id_data = datapack[4].to(self.device) # (T, N_P) particle이 domain내에 존재하는지 안하는지
+        # 모든 데이터를 CPU로 이동
+        cells_data = datapack[0].to('cpu') # (N_E, 3)
+        mesh_pos_data = datapack[1].to('cpu')
+        particle_pos_data = datapack[2].to('cpu') # (T, N, 3)
+        mesh_node_type_data = datapack[3].to('cpu') # (T, N_E)
+        particle_id_data = datapack[4].to('cpu') # (T, N_P) particle이 domain내에 존재하는지 안하는지
 
-        cells_indicies = torch.tensor(range(cells_data.shape[0]), device=self.device)
+        cells_indicies = torch.tensor(range(cells_data.shape[0]), device='cpu')
         cells = torch.hstack((cells_indicies[:, None], cells_data))
 
         mesh_node_type = mesh_node_type_data.clone().float()
@@ -269,8 +269,8 @@ class gns_dataset(Dataset):
             receivers = receivers[mask]
             senders = senders[mask]
 
-        receivers = torch.from_numpy(receivers).long().to(self.device)
-        senders = torch.from_numpy(senders).long().to(self.device)
+        receivers = torch.from_numpy(receivers).long().to('cpu')
+        senders = torch.from_numpy(senders).long().to('cpu')
 
         edges = torch.vstack((receivers, senders)).unique(dim=1)
 
@@ -281,18 +281,18 @@ class gns_dataset(Dataset):
             self.maximum_particle_edges = receivers.shape[0]
             self.maximum_particle_edges_node = num_nodes
 
-        norm = torch.tensor([0, 0, 0, 0, 0, 0]).float().to(self.device)
-        norm = norm.repeat(num_nodes, 1)
+        norm = torch.tensor([0, 0, 0, 0, 0, 0]).float().to('cpu')
+        norm = norm.repeat(num_nodes, 1).to('cpu')
 
         if mesh_pos.shape[0] != 0:
-            mesh_receivers, contact_pos, contact_vel, contact_type, mesh_norm = graph_builder.build_boundary_edge(cells[:,1:], particle_pos, mesh_pos, particle_indices, mesh_node_type, mesh_vel, self.device, contact_distance)
+            mesh_receivers, contact_pos, contact_vel, contact_type, mesh_norm = graph_builder.build_boundary_edge(cells[:,1:], particle_pos, mesh_pos, particle_indices, mesh_node_type, mesh_vel, 'cpu', contact_distance)
 
         else:
-            mesh_receivers = torch.empty((0), device=self.device, dtype = receivers.dtype)
-            contact_pos = torch.empty((0,particle_pos.shape[1]), device=self.device, dtype=particle_pos.dtype)
-            contact_vel = torch.empty((0,particle_vel.shape[1]), device=self.device, dtype=particle_vel.dtype)
-            contact_type = torch.empty((0), device=self.device, dtype=torch.int32)
-            mesh_norm = torch.empty((0, norm.shape[1]), device=self.device, dtype=norm.dtype)
+            mesh_receivers = torch.empty((0), device='cpu', dtype = receivers.dtype)
+            contact_pos = torch.empty((0,particle_pos.shape[1]), device='cpu', dtype=particle_pos.dtype)
+            contact_vel = torch.empty((0,particle_vel.shape[1]), device='cpu', dtype=particle_vel.dtype)
+            contact_type = torch.empty((0), device='cpu', dtype=torch.int32)
+            mesh_norm = torch.empty((0, norm.shape[1]), device='cpu', dtype=norm.dtype)
 
         if self.maximum_mesh_edges < mesh_receivers.shape[0]:
             self.maximum_mesh_edges = mesh_receivers.shape[0]
@@ -303,7 +303,7 @@ class gns_dataset(Dataset):
         num_pairwise_edges = receivers.shape[0] # contact edge를 붙이기 전 particle-particle edge 개수 저장
         
         receivers = torch.hstack([receivers,mesh_receivers])
-        senders = torch.hstack([senders,torch.tensor([i for i in range(particle_pos.shape[0], particle_pos.shape[0]+contact_pos.shape[0])], device=self.device, dtype=torch.int64)])
+        senders = torch.hstack([senders,torch.tensor([i for i in range(particle_pos.shape[0], particle_pos.shape[0]+contact_pos.shape[0])], device='cpu', dtype=torch.int64)])
 
         pos = torch.vstack([particle_pos, contact_pos])
         next_pos = torch.vstack([next_particle_pos, contact_pos])
@@ -311,7 +311,7 @@ class gns_dataset(Dataset):
         vel = torch.vstack([particle_vel, contact_vel])
         next_vel = torch.vstack([next_particle_vel, contact_vel[:,-3:]])
 
-        node_type = torch.hstack([torch.tensor([0 for _ in range(particle_pos.shape[0])], device=self.device), contact_type]).to(self.device)
+        node_type = torch.hstack([torch.tensor([0 for _ in range(particle_pos.shape[0])], device='cpu'), contact_type]).to('cpu')
         node_type = graph_builder.build_node_type(node_type)
 
         hopper = self.node_type_dict['hopper']
@@ -344,8 +344,8 @@ class gns_dataset(Dataset):
         target_vel = next_vel.detach()
         target_pos = next_pos.detach()
 
-        normalized_target = self.target_normalizer.forward(target_acc[:particle_indices.shape[0]], accumulate = True)
-        normalized_target = self.target_normalizer.forward(target_acc, accumulate = False).detach().clone()
+        normalized_target = self.target_normalizer.forward(target_acc[:particle_indices.shape[0]].to(self.device), accumulate = True)
+        normalized_target = self.target_normalizer.forward(target_acc.to(self.device), accumulate = False).detach().to('cpu').clone()
 
         normalized_target_sign = torch.where(normalized_target >= 0.0, 1, -1)
         normalized_target = torch.log(normalized_target.abs() + 1) * normalized_target_sign
@@ -358,16 +358,16 @@ class gns_dataset(Dataset):
         # =========================================================
         
         num_total_edges = receivers.shape[0]
-        pairwise_mask = torch.zeros(num_total_edges, dtype=torch.bool, device=self.device)
+        pairwise_mask = torch.zeros(num_total_edges, dtype=torch.bool, device='cpu')
         pairwise_mask[:num_pairwise_edges] = True
 
-        edge_a = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device=self.device)
-        edge_b = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device=self.device)
-        edge_c = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device=self.device)
+        edge_a = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device='cpu')
+        edge_b = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device='cpu')
+        edge_c = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device='cpu')
 
-        reverse_edge_idx = torch.full((num_total_edges,), -1, dtype=torch.long, device=self.device)
-        b_degenerate_mask = torch.zeros((num_total_edges,), dtype=torch.bool, device=self.device)
-        c_degenerate_mask = torch.zeros((num_total_edges,), dtype=torch.bool, device=self.device)
+        reverse_edge_idx = torch.full((num_total_edges,), -1, dtype=torch.long, device='cpu')
+        b_degenerate_mask = torch.zeros((num_total_edges,), dtype=torch.bool, device='cpu')
+        c_degenerate_mask = torch.zeros((num_total_edges,), dtype=torch.bool, device='cpu')
                 
         if num_pairwise_edges > 0:
             pair_receivers = receivers[:num_pairwise_edges]
@@ -399,8 +399,8 @@ class gns_dataset(Dataset):
         cur_vel = vel[:, -3:]                                   # (N_total, 3)
         rel_vel = cur_vel[senders] - cur_vel[receivers]         # (E, 3)
 
-        dx_local = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device=self.device)
-        dv_local = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device=self.device)
+        dx_local = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device='cpu')
+        dv_local = torch.zeros((num_total_edges, 3), dtype=pos.dtype, device='cpu')
 
         if pairwise_mask.any():
             pw = pairwise_mask
@@ -415,11 +415,11 @@ class gns_dataset(Dataset):
 
       # 최종 scalarized edge feature: 7차원
         edge_features = torch.hstack([dist, dx_local, dv_local])
-        edge_features = self.edge_normalizer(edge_features, accumulate=True)
+        edge_features = self.edge_normalizer(edge_features.to(self.device), accumulate=True).to('cpu')
 
         # node feature
         node_features = torch.hstack((vel, node_type, norm))
-        node_features = self.node_normalizer(node_features, accumulate=True)
+        node_features = self.node_normalizer(node_features.to(self.device), accumulate=True).to('cpu')
 
         nodepack = NodePack(
             node_features,
@@ -529,7 +529,7 @@ class gns_dataset(Dataset):
     
     def update_data(self, raw_data, contact_distance):
         with torch.no_grad():
-            raw_data.todevice(self.device)
+            raw_data.todevice('cpu')
             return self.graph_data(contact_distance, raw_data, False)
         
     def reverse_output(self, output, updated_pos, updated_vel):
@@ -540,7 +540,7 @@ class gns_dataset(Dataset):
         updated_pos = updated_pos.to(acc_prediction.device)
         updated_vel = updated_vel.to(acc_prediction.device)
 
-        vel_prediction = torch.zeros_like(updated_vel).float().to(self.device)
+        vel_prediction = torch.zeros_like(updated_vel).float().to(acc_prediction.device)
         vel_prediction[:, :-3] = updated_vel[:, 3:]
         vel_prediction[:, -3:] = updated_vel[:, -3:] + acc_prediction
         pos_prediction = updated_pos + vel_prediction[:, -3:]

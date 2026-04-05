@@ -49,7 +49,8 @@ def mem(tag=""):
 
 test_loss_list = []
 
-device = 'cuda:0'
+device = torch.device('cuda:0') 
+torch.cuda.set_device(device)
 
 X_BOUND = [-50, 50]
 Y_BOUND = [-50, 50]
@@ -211,6 +212,11 @@ def pre_accumulation(i, data_set : dataset.gns_dataset):
     # ✅ DataLoader를 쓰기 위해 get_data 대신 직접 index로 접근합니다.
     _ = data_set[i]
 
+def collate_fn(batch):
+    # batch는 리스트이고 각 요소는 get_data()의 결과 (namedtuple DataPack)
+    # batch_size > 1일 때 리스트를 그대로 유지하여 Graph.forward가 배치 처리하도록 함
+    return batch
+
 def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
 
     dataset_length = data_set.__len__()
@@ -250,16 +256,11 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
     batch_size = 4  # 배치 사이즈 증가로 GPU 활용도 높임
     num_workers = 2  # 데이터 로딩/전처리를 비동기로 수행
     
-    def collate_fn(batch):
-        # batch는 리스트이고 각 요소는 get_data()의 결과 (namedtuple DataPack)
-        # batch_size > 1일 때 리스트를 그대로 유지하여 Graph.forward가 배치 처리하도록 함
-        return batch
-    
     train_loader = DataLoader(
         data_set,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
+        num_workers=0,
         collate_fn=collate_fn,
     )
 
@@ -312,6 +313,48 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
                         norm.save_variables()
 
                     print("/// time passed since training start: ", datetime.now() - t0, " ///")
+
+    plt.rcParams['figure.figsize'] = [20, 5]
+    plt.plot(loss_list, label = ("loss",'loss_abs'))
+    plt.legend()
+    plt.xlabel('epochs')
+    plt.ylabel('loss')
+    plt.ylim(0.0, 0.1)
+    plt.savefig(saving_path+'loss.png', dpi=200)
+    plt.show()
+    plt.close()
+    plt.plot(loss_list, label = ("loss",'loss_abs'))
+    plt.legend()
+    plt.xlabel('epochs')
+    plt.ylabel('loss')
+    plt.ylim(0.0, 0.01)
+    plt.savefig(saving_path+'loss_0_1.png', dpi=200)
+    plt.show()
+    plt.close()
+
+    with torch.no_grad():
+        test_cycle(test_set, graph, roll_out_flag=False, one_step_flag=True)
+
+    if step % 10 == 0:
+        log_text = ("Epochs : " + str(epoch) + 
+                    " - Step : " + str(step) + 
+                    " - Loss : " + str('%.8f' % loss[0]) + 
+                    " - Abs Loss : " + str('%.8f' % loss[1]) + 
+                    " - Lr : " + str('%.8f' % graph.graph_optimizer.param_groups[0]['lr']))
+        print(log_text)
+
+    if (step % 100 == 0):
+        with open(saving_path + 'log_' + time + '.txt', 'a') as log_file:
+            log_file.write(log_text + '\n')
+            log_file.write('Time : ' + str(datetime.now()) + '\n')
+
+    if step % monitor_interval == 0:
+        torch.save(graph.graph_net, saving_path + 'graph_network.pt')
+
+        for norm in normalizer_pack:
+            norm.save_variables()
+
+        print("/// time passed since training start: ", datetime.now() - t0, " ///")
 
     plt.rcParams['figure.figsize'] = [20, 5]
     plt.plot(loss_list, label = ("loss",'loss_abs'))

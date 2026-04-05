@@ -393,6 +393,13 @@ def build_boundary_edge(cells, particle_pos, mesh_pos, particle_indices, mesh_no
     num_interaction_roller2 = 5
     
     with torch.no_grad():
+        # Ensure all input tensors are on the specified device
+        cells = cells.to(device)
+        particle_pos = particle_pos.to(device)
+        mesh_pos = mesh_pos.to(device)
+        particle_indices = particle_indices.to(device)
+        mesh_node_type = mesh_node_type.to(device)
+        mesh_vel = mesh_vel.to(device)
 
         diff = (torch.reshape(particle_pos,(-1,1,3)) - torch.reshape(mesh_pos[cells[:,0]], (1,-1,3)))
         

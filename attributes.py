@@ -5,7 +5,7 @@ def attribute(device):
     dataset_name = 'LGES_sample'
     n_epochs = 500
     latent_size = 128
-    pre_accumulation_steps = 20
+    pre_accumulation_steps = 10
 
     message_passing_steps = 10
 

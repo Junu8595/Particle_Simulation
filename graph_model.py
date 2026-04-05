@@ -25,8 +25,45 @@ class Graph():
         self.decode = self.decoder
 
 
+    def _move_datapack_to_device(self, datapack, device):
+        """datapack 내부의 모든 텐서를 지정된 device로 이동"""
+        def move_tensor_or_tuple(obj, device):
+            if isinstance(obj, torch.Tensor):
+                return obj.to(device)
+            elif isinstance(obj, tuple):
+                return tuple(move_tensor_or_tuple(item, device) for item in obj)
+            else:
+                return obj
+        
+        # nodepack 이동
+        nodepack = datapack.nodepack
+        moved_nodepack = tuple(move_tensor_or_tuple(field, device) for field in nodepack)
+        
+        # edgepack 이동
+        edgepack = datapack.edgepack
+        moved_edgepack = tuple(move_tensor_or_tuple(field, device) for field in edgepack)
+        
+        # targetpack 이동
+        targetpack = datapack.targetpack
+        moved_targetpack = tuple(move_tensor_or_tuple(field, device) for field in targetpack)
+        
+        from dataset import DataPack, NodePack, EdgePack, TargetPack
+        
+        # nodepack 재생성
+        moved_nodepack = NodePack(*moved_nodepack)
+        
+        # edgepack 재생성
+        moved_edgepack = EdgePack(*moved_edgepack)
+        
+        # targetpack 재생성
+        moved_targetpack = TargetPack(*moved_targetpack)
+        
+        return DataPack(moved_nodepack, moved_edgepack, moved_targetpack)
+    
     def forward_single(self, datapack, train_flag = True, grid_flag = False):
         """단일 그래프 샘플 처리"""
+        # ✅ CPU에서 온 datapack을 GPU로 이동
+        datapack = self._move_datapack_to_device(datapack, self.device)
         self.encode(datapack)
         self.process(self.message_passing_steps)
         return self.decode(datapack.targetpack, train_flag, grid_flag)
