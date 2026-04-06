@@ -13,12 +13,20 @@ def attribute(device):
     test_interval = 25000
     test_length = 293
     test_sequence_idx = 5
-
+    
+    # 원격 GPU server
+    """ 
     ds_path = "/home/ssdl/PJW/Particle_Simulation/training_40_/"
     training_path = "train/"
     testing_path = "test/"
     calculix_path = "/home/ssdl/PJW/Particle_Simulation/calculix/"
-
+    """
+    # 연구실
+    ds_path = r"C:/Users/AISDL_PJW/Particle_Simulation/training_40_/"
+    training_path = "train/"
+    testing_path = "test/"
+    calculix_path = r"C:/Users/AISDL_PJW/Particle_Simulation/calculix/"
+    
     training_noise = 0.0003
     contact_distance = 0.75
 
