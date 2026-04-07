@@ -33,12 +33,12 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-train_flag = True
+train_flag = False
 one_step_flag = False
 roll_out_flag = True
-rotate_flag = True
+rotate_flag = False
 fresh_start = True
-plot_flag = False
+plot_flag = True
 
 def mem(tag=""):
     if torch.cuda.is_available():
@@ -83,7 +83,7 @@ contact_distance = data_parameters_pack.contact_distance
 
 time = utils.get_time()
 load_path = './load_network/'
-test_network_path = './test_network/'
+test_network_path = '/home/ssdl/PJW/Particle_Simulation/saves_2026_04_06_16_41_34/'
 saving_path = './saves_' + time + '/'
 test_result_path = './test_result_' + time + '/'
 
@@ -200,9 +200,9 @@ node_input_size = network_attributes_pack.node_encoder.input_size
 edge_input_size = network_attributes_pack.edge_encoder.input_size
 target_input_size = network_attributes_pack.edge_decoder_pp.output_size
 
-node_normalizer = normalizer.online_normalizer('node_normalizer', node_input_size, norm_acc_length, 1e-6, saving_path, device)
-edge_normalizer = normalizer.online_normalizer('mesh_normalizer', edge_input_size, norm_acc_length, 1e-6, saving_path, device)
-target_normalizer = normalizer.online_normalizer('target_normalizer', target_input_size, norm_acc_length, 1e-6, saving_path, device)
+node_normalizer = normalizer.online_normalizer('node_normalizer', node_input_size, norm_acc_length, 1e-6, saving_path, 'cpu')
+edge_normalizer = normalizer.online_normalizer('mesh_normalizer', edge_input_size, norm_acc_length, 1e-6, saving_path, 'cpu')
+target_normalizer = normalizer.online_normalizer('target_normalizer', target_input_size, norm_acc_length, 1e-6, saving_path, 'cpu')
 
 normalizer_pack = [node_normalizer, edge_normalizer, target_normalizer]
 
@@ -253,14 +253,15 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
     t0 = datetime.now()
     loss_list = []
 
-    batch_size = 4  # 배치 사이즈 증가로 GPU 활용도 높임
-    num_workers = 2  # 데이터 로딩/전처리를 비동기로 수행
+    batch_size = 1  # 배치 사이즈 증가로 GPU 활용도 높임
+    num_workers = 8  # 데이터 로딩/전처리를 비동기로 수행
     
     train_loader = DataLoader(
         data_set,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=num_workers,
+        pin_memory=True,
         collate_fn=collate_fn,
     )
 
@@ -433,7 +434,7 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
     loss_list = []
     loss_abs_list = []
 
-    pred_particle_id = raw_data_container[0].particle_id.clone().to(test_set.device)
+    pred_particle_id = raw_data_container[0].particle_id.clone().cpu()
     if pred_particle_id.ndim == 2 and pred_particle_id.shape[-1] == 1:
         pred_particle_id = pred_particle_id.squeeze(-1)
     pred_particle_id = pred_particle_id.bool()
@@ -445,7 +446,7 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
         else:
             raw_data_pack = raw_data_container[-1]
 
-        raw_data_pack.todevice(test_set.device)
+        #raw_data_pack.todevice(test_set.device)
 
         if one_step_flag == True or updated_pos == None:
             updated_vel, updated_prev_pos, updated_pos, updated_acc = test_set.data_from_test_set(raw_data_pack)
@@ -460,6 +461,9 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
 
             spatial_mask = (px >= -60) & (px <= 60) & (py >= -40) & (py <= 60) & (pz >= -10) & (pz <= 100)  # (N_p,)
 
+            #pred_particle_id = spatial_mask & pred_particle_id # (N_p,)
+            spatial_mask = spatial_mask.cpu()
+            pred_particle_id = pred_particle_id.cpu()
             pred_particle_id = spatial_mask & pred_particle_id # (N_p,)
 
             # time 축 전체에 대해 동일한 particle index만 유지
@@ -650,9 +654,10 @@ def grid_test_cycle(test_set, graph, plot_flag, test_sequence_idx, max_particles
         height, width = 600, 600
 
         empty_space = np.ones((height, space, 3), dtype=np.uint8) * 255
-
-        fcc = cv2.VideoWriter_fourcc(*'DIVX')
-        out = cv2.VideoWriter(test_network_path + 'xplane_large' + str(test_sequence_idx) + '.avi', fcc, 30.0, (1260, 600))
+        fcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(test_network_path + 'xplane_large' + str(test_sequence_idx) + '.mp4', fcc, 30.0, (1260, 600))
+        # fcc = cv2.VideoWriter_fourcc(*'DIVX')
+        # out = cv2.VideoWriter(test_network_path + 'xplane_large' + str(test_sequence_idx) + '.avi', fcc, 30.0, (1260, 600))
                     
     t1 = datetime.now()
 

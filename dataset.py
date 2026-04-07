@@ -42,30 +42,23 @@ class RawDataPack:
             setattr(self, field, data.to(device))
 
 NodePack = namedtuple(
-          'nodepack',
-            ['node_features', 'particle_indices', 'next_particle_indices',
-            'hopper_indices', 'roller1_indices', 'roller2_indices']
-        )
-EdgePack = namedtuple(
-    'edgepack',
-[
-    'edge_features',
-    'receivers',
-    'senders',
-    'edge_a',
-    'edge_b',
-    'edge_c',
-    'reverse_edge_idx',
-    'pairwise_mask',
-    'b_degenerate_mask',
-    'c_degenerate_mask'
-]
+    'NodePack', 
+    ['node_features', 'particle_indices', 'next_particle_indices',
+     'hopper_indices', 'roller1_indices', 'roller2_indices']
 )
+
+EdgePack = namedtuple(
+    'EdgePack', 
+    ['edge_features', 'receivers', 'senders', 'edge_a', 'edge_b', 'edge_c', 
+     'reverse_edge_idx', 'pairwise_mask', 'b_degenerate_mask', 'c_degenerate_mask']
+)
+
 TargetPack = namedtuple(
-    'targetpack',
+    'TargetPack', 
     ['normalized_target', 'target_acc', 'target_vel', 'target_pos']
-    )
-DataPack = namedtuple('datapack', ['nodepack', 'edgepack', 'targetpack'])
+)
+
+DataPack = namedtuple('DataPack', ['nodepack', 'edgepack', 'targetpack'])
 
 class gns_dataset(Dataset):
     def __init__(self, dataset_properties_packs, normalizer_packs, device):
@@ -199,7 +192,7 @@ class gns_dataset(Dataset):
         next_mesh_pos = mesh_pos_data[next_iter_idx].clone().float()
 
         if self.noise_level > 1e-8:
-            noise = (torch.randn(particle_pos.shape) * self.noise_level).to(particle_pos.device)
+            noise = (torch.randn(particle_pos.shape) * self.noise_level).to(particle_pos.to('cpu'))
             particle_pos[particle_indices] += noise[particle_indices]
 
         particle_vel = (particle_pos_data[prev_vel_iter_idx:iter_idx+1]-particle_pos_data[prev_vel_iter_idx-1:iter_idx]).clone().float()
@@ -242,35 +235,42 @@ class gns_dataset(Dataset):
         self.particle_indices = particle_indices
         self.next_particle_indices = next_particle_indices
         num_nodes = particle_pos.shape[0]
-        sub_indices = particle_indices.detach().cpu().numpy()
-        sub_particle_pos = particle_pos[sub_indices].detach().cpu().numpy()
+        sub_indices = particle_indices
+        sub_particle_pos = particle_pos[sub_indices]
 
         if sub_particle_pos.ndim == 1:
             sub_particle_pos = sub_particle_pos[None, :]   # (1,3)
 
         if sub_particle_pos.shape[0] != 0:
-
-            tree = neighbors.KDTree(sub_particle_pos)
-
-            receiver_list = tree.query_radius(sub_particle_pos, r = contact_distance)
+            
+            # 1. KDTree를 위해 순수 CPU 텐서를 일시적으로 numpy로 변환
+            sub_pos_np = sub_particle_pos.numpy()
+            tree = neighbors.KDTree(sub_pos_np)
+            receiver_list = tree.query_radius(sub_pos_np, r = contact_distance)
 
             num_sub = len(sub_indices)
             senders_sub = np.repeat(np.arange(num_sub), [len(a) for a in receiver_list])
             receivers_sub = np.concatenate(receiver_list, axis=0)
 
+            # 2. 텐서 연산을 위해 다시 안전한 CPU 텐서로 원복 (Device Mismatch 완벽 차단)
+            senders_sub = torch.from_numpy(senders_sub).long()
+            receivers_sub = torch.from_numpy(receivers_sub).long()
+
             senders = sub_indices[senders_sub]
             receivers = sub_indices[receivers_sub]
         else:
-            senders = np.empty((0,), dtype=sub_indices.dtype)
-            receivers = np.empty((0,), dtype=sub_indices.dtype)
+            #senders = np.empty((0,), dtype=sub_indices.dtype)
+            #receivers = np.empty((0,), dtype=sub_indices.dtype)
+            senders = torch.empty((0,), dtype=sub_indices.dtype, device='cpu')
+            receivers = torch.empty((0,), dtype=sub_indices.dtype, device='cpu')
 
         if not self_edge:
             mask = receivers != senders
             receivers = receivers[mask]
             senders = senders[mask]
 
-        receivers = torch.from_numpy(receivers).long().to('cpu')
-        senders = torch.from_numpy(senders).long().to('cpu')
+        #receivers = torch.from_numpy(receivers).long().to('cpu')
+        #senders = torch.from_numpy(senders).long().to('cpu')
 
         edges = torch.vstack((receivers, senders)).unique(dim=1)
 
@@ -344,8 +344,8 @@ class gns_dataset(Dataset):
         target_vel = next_vel.detach()
         target_pos = next_pos.detach()
 
-        normalized_target = self.target_normalizer.forward(target_acc[:particle_indices.shape[0]].to(self.device), accumulate = True)
-        normalized_target = self.target_normalizer.forward(target_acc.to(self.device), accumulate = False).detach().to('cpu').clone()
+        normalized_target = self.target_normalizer.forward(target_acc[:particle_indices.shape[0]].to('cpu'), accumulate = True)
+        normalized_target = self.target_normalizer.forward(target_acc.to('cpu'), accumulate = False).detach().to('cpu').clone()
 
         normalized_target_sign = torch.where(normalized_target >= 0.0, 1, -1)
         normalized_target = torch.log(normalized_target.abs() + 1) * normalized_target_sign
@@ -415,11 +415,11 @@ class gns_dataset(Dataset):
 
       # 최종 scalarized edge feature: 7차원
         edge_features = torch.hstack([dist, dx_local, dv_local])
-        edge_features = self.edge_normalizer(edge_features.to(self.device), accumulate=True).to('cpu')
+        edge_features = self.edge_normalizer(edge_features.to('cpu'), accumulate=True).to('cpu')
 
         # node feature
         node_features = torch.hstack((vel, node_type, norm))
-        node_features = self.node_normalizer(node_features.to(self.device), accumulate=True).to('cpu')
+        node_features = self.node_normalizer(node_features.to('cpu'), accumulate=True).to('cpu')
 
         nodepack = NodePack(
             node_features,
@@ -487,8 +487,8 @@ class gns_dataset(Dataset):
      rel_vel = cur_vel[senders] - cur_vel[receivers]  # (E, 3)
  
      # 기본값 0
-     dx_local = torch.zeros((rel_pos.shape[0], 3), device=rel_pos.device, dtype=rel_pos.dtype)
-     dv_local = torch.zeros((rel_vel.shape[0], 3), device=rel_vel.device, dtype=rel_vel.dtype)
+     dx_local = torch.zeros((rel_pos.shape[0], 3), device='cpu', dtype=rel_pos.dtype)
+     dv_local = torch.zeros((rel_vel.shape[0], 3), device='cpu', dtype=rel_vel.dtype)
 
      if pairwise_mask.any():
         pw = pairwise_mask
@@ -520,11 +520,10 @@ class gns_dataset(Dataset):
         return updated_vel, updated_prev_pos, updated_pos, updated_acc
     
     def update_raw_data(self, raw_data_pack, updated_vel, updated_prev_pos, updated_pos, updated_acc):
-        device = raw_data_pack.particle_pos.device
-        raw_data_pack = dc_replace(raw_data_pack, particle_vel = updated_vel.clone().to(device))
-        raw_data_pack = dc_replace(raw_data_pack, prev_particle_pos = updated_prev_pos.clone().to(device))
-        raw_data_pack = dc_replace(raw_data_pack, particle_pos = updated_pos.clone().to(device))
-        raw_data_pack = dc_replace(raw_data_pack, acc = updated_acc.clone().to(device))
+        raw_data_pack = dc_replace(raw_data_pack, particle_vel = updated_vel.clone().to('cpu'))
+        raw_data_pack = dc_replace(raw_data_pack, prev_particle_pos = updated_prev_pos.clone().to('cpu'))
+        raw_data_pack = dc_replace(raw_data_pack, particle_pos = updated_pos.clone().to('cpu'))
+        raw_data_pack = dc_replace(raw_data_pack, acc = updated_acc.clone().to('cpu'))
         return raw_data_pack
     
     def update_data(self, raw_data, contact_distance):
@@ -533,14 +532,15 @@ class gns_dataset(Dataset):
             return self.graph_data(contact_distance, raw_data, False)
         
     def reverse_output(self, output, updated_pos, updated_vel):
+        output = output.to('cpu')        
         output_sign = torch.where(output >= 0.0, 1, -1)
-        output = (torch.pow(np.e * torch.ones(output.shape, device=output.device), output.abs()) - 1) * output_sign
+        output = (torch.pow(np.e * torch.ones(output.shape, device='cpu'), output.abs()) - 1) * output_sign
         acc_prediction = self.target_normalizer.inverse(output)
         
-        updated_pos = updated_pos.to(acc_prediction.device)
-        updated_vel = updated_vel.to(acc_prediction.device)
+        updated_pos = updated_pos.to('cpu')
+        updated_vel = updated_vel.to('cpu')
 
-        vel_prediction = torch.zeros_like(updated_vel).float().to(acc_prediction.device)
+        vel_prediction = torch.zeros_like(updated_vel).float().to('cpu')
         vel_prediction[:, :-3] = updated_vel[:, 3:]
         vel_prediction[:, -3:] = updated_vel[:, -3:] + acc_prediction
         pos_prediction = updated_pos + vel_prediction[:, -3:]
@@ -590,37 +590,35 @@ class gns_dataset(Dataset):
         return (x >= xbound[0]) & (x <= xbound[1]) & (y >= ybound[0]) & (y <= ybound[1]) & (z >= zbound[0]) & (z <= zbound[1])
 
     def get_intersecting_mesh_mask(self, raw_data_pack, xbound, ybound, zbound):
-            device = raw_data_pack.mesh_pos.device
-            
-            cell_node_indices = raw_data_pack.cells[:, 1:] 
-            cell_pos = raw_data_pack.mesh_pos[cell_node_indices] 
+        cell_node_indices = raw_data_pack.cells[:, 1:].to('cpu')
+        cell_pos = raw_data_pack.mesh_pos[cell_node_indices].to('cpu') 
 
-            cell_min = torch.min(cell_pos, dim=1)[0] # (N_cells, 3)
-            cell_max = torch.max(cell_pos, dim=1)[0] # (N_cells, 3)
+        cell_min = torch.min(cell_pos, dim=1)[0] # (N_cells, 3)
+        cell_max = torch.max(cell_pos, dim=1)[0] # (N_cells, 3)
 
-            grid_min = torch.tensor([xbound[0], ybound[0], zbound[0]], device=device)
-            grid_max = torch.tensor([xbound[1], ybound[1], zbound[1]], device=device)
+        grid_min = torch.tensor([xbound[0], ybound[0], zbound[0]], device='cpu')
+        grid_max = torch.tensor([xbound[1], ybound[1], zbound[1]], device='cpu')
 
-            intersect_x = (cell_max[:, 0] >= grid_min[0]) & (cell_min[:, 0] <= grid_max[0])
-            intersect_y = (cell_max[:, 1] >= grid_min[1]) & (cell_min[:, 1] <= grid_max[1])
-            intersect_z = (cell_max[:, 2] >= grid_min[2]) & (cell_min[:, 2] <= grid_max[2])
+        intersect_x = (cell_max[:, 0] >= grid_min[0]) & (cell_min[:, 0] <= grid_max[0])
+        intersect_y = (cell_max[:, 1] >= grid_min[1]) & (cell_min[:, 1] <= grid_max[1])
+        intersect_z = (cell_max[:, 2] >= grid_min[2]) & (cell_min[:, 2] <= grid_max[2])
 
-            cell_mask = intersect_x & intersect_y & intersect_z # (N_cells, )
+        cell_mask = intersect_x & intersect_y & intersect_z # (N_cells, )
 
-            valid_cells = raw_data_pack.cells[cell_mask]
-            valid_node_indices = torch.unique(valid_cells[:, 1:])
+        valid_cells = raw_data_pack.cells[cell_mask]
+        valid_node_indices = torch.unique(valid_cells[:, 1:])
 
-            num_mesh_nodes = raw_data_pack.mesh_pos.shape[0]
-            mesh_mask = torch.zeros(num_mesh_nodes, dtype=torch.bool, device=device)
-            mesh_mask[valid_node_indices] = True
+        num_mesh_nodes = raw_data_pack.mesh_pos.shape[0]
+        mesh_mask = torch.zeros(num_mesh_nodes, dtype=torch.bool, device='cpu')
+        mesh_mask[valid_node_indices] = True
 
-            return mesh_mask
+        return mesh_mask
     
     def reindex_cells(self, old_to_new, cells):
         out = cells.clone()
         node_ids = out[:, 1:].reshape(-1).detach().cpu().tolist()
         mapped = [old_to_new[int(v)] for v in node_ids]
-        out[:, 1:] = torch.tensor(mapped, dtype=torch.long, device=cells.device).view_as(out[:, 1:])
+        out[:, 1:] = torch.tensor(mapped, dtype=torch.long, device='cpu').view_as(out[:, 1:])
 
         return out
     

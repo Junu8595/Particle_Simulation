@@ -5,7 +5,7 @@ def attribute(device):
     dataset_name = 'LGES_sample'
     n_epochs = 500
     latent_size = 128
-    pre_accumulation_steps = 10
+    pre_accumulation_steps = 100
 
     message_passing_steps = 10
 
@@ -15,18 +15,19 @@ def attribute(device):
     test_sequence_idx = 5
     
     # 원격 GPU server
-    """ 
     ds_path = "/home/ssdl/PJW/Particle_Simulation/training_40_/"
     training_path = "train/"
     testing_path = "test/"
     calculix_path = "/home/ssdl/PJW/Particle_Simulation/calculix/"
-    """
+    
     # 연구실
+    """
     ds_path = r"C:/Users/AISDL_PJW/Particle_Simulation/training_40_/"
     training_path = "train/"
     testing_path = "test/"
     calculix_path = r"C:/Users/AISDL_PJW/Particle_Simulation/calculix/"
-    
+    """
+
     training_noise = 0.0003
     contact_distance = 0.75
 
