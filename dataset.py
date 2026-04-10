@@ -671,10 +671,30 @@ class gns_dataset(Dataset):
     
     def __getitem__(self, idx):
         if self.mode == 'train':
-            # 학습: 미리 구워둔 텐서 덩어리 초고속 로딩
             baked_file_path = f'baked_training_data/step_{idx}.pt'
             data_pack = torch.load(baked_file_path, weights_only=False)
+            
+            # 🧪 [정밀 타격 수리공] 비어있는 pairwise_mask만 채워 넣습니다.
+            if data_pack.edgepack.pairwise_mask is None:
+                
+                # 1. 입자(Particle)들의 노드 번호를 가져옵니다.
+                p_idx = data_pack.nodepack.particle_indices
+                
+                # 2. 엣지를 보내는 쪽과 받는 쪽 노드 번호를 가져옵니다.
+                senders = data_pack.edgepack.senders
+                receivers = data_pack.edgepack.receivers
+                
+                # 3. 양쪽 모두 '입자'인 경우만 찾아냅니다. (이게 바로 PP 마스크입니다)
+                # torch.isin을 쓰면 senders/receivers가 입자 번호 목록(p_idx)에 있는지 완벽히 검사합니다.
+                is_sender_particle = torch.isin(senders, p_idx)
+                is_receiver_particle = torch.isin(receivers, p_idx)
+                
+                pairwise_mask = is_sender_particle & is_receiver_particle
+                
+                # 4. _replace를 이용해 비어있던 칸(pairwise_mask)만 새 값으로 교체합니다.
+                new_edgepack = data_pack.edgepack._replace(pairwise_mask=pairwise_mask)
+                data_pack = data_pack._replace(edgepack=new_edgepack)
+                
             return data_pack
         else:
-            # 테스트/평가: 기존처럼 실시간 무거운 연산 수행
             return self.get_data(idx, self.contact_distance, False)

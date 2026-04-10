@@ -19,6 +19,7 @@ import attributes as attr
 import matplotlib.pyplot as plt
 
 from dataclasses import replace as dc_replace
+from dataset import DataPack, NodePack, EdgePack, TargetPack
 
 import cv2
 import random
@@ -206,6 +207,85 @@ target_normalizer = normalizer.online_normalizer('target_normalizer', target_inp
 
 normalizer_pack = [node_normalizer, edge_normalizer, target_normalizer]
 
+import torch
+from dataset import DataPack, NodePack, EdgePack, TargetPack
+
+def gns_collate_fn(batch):
+    # 1. 노드 정보 합치기
+    node_features = torch.cat([d.nodepack.node_features for d in batch], dim=0)
+    
+    # 2. 엣지 및 모든 마스크/벡터 정보 합치기 준비
+    all_receivers, all_senders, all_edge_features = [], [], []
+    all_pairwise_masks, all_reverse_idx = [], []
+    all_edge_a, all_edge_b, all_edge_c = [], [], []
+    all_b_deg, all_c_deg = [], []
+    
+    node_offset = 0
+    edge_offset = 0  # 👈 reverse_edge_idx를 위한 엣지 오프셋!
+
+    for d in batch:
+        ep = d.edgepack
+        
+        # 노드 인덱스 시프트
+        all_receivers.append(ep.receivers + node_offset)
+        all_senders.append(ep.senders + node_offset)
+        
+        # 그냥 합치면 되는 텐서들
+        all_edge_features.append(ep.edge_features)
+        all_pairwise_masks.append(ep.pairwise_mask)
+        all_edge_a.append(ep.edge_a)
+        all_edge_b.append(ep.edge_b)
+        all_edge_c.append(ep.edge_c)
+        all_b_deg.append(ep.b_degenerate_mask)
+        all_c_deg.append(ep.c_degenerate_mask)
+        
+        # 🚨 [매우 중요] 반대 방향 엣지 인덱스(reverse_edge_idx) 시프트 로직
+        # -1은 반대 엣지가 없다는 뜻이므로, -1이 아닌 진짜 인덱스에만 누적된 엣지 개수를 더해줍니다.
+        if ep.reverse_edge_idx is not None:
+            rev_idx = ep.reverse_edge_idx.clone()
+            valid_mask = rev_idx != -1
+            rev_idx[valid_mask] += edge_offset
+            all_reverse_idx.append(rev_idx)
+            
+        # 다음 배치를 위해 오프셋 증가
+        node_offset += d.nodepack.node_features.size(0)
+        edge_offset += ep.receivers.size(0)
+
+    # 텐서 병합 (dim=0으로 길게 이어 붙이기)
+    receivers = torch.cat(all_receivers, dim=0)
+    senders = torch.cat(all_senders, dim=0)
+    edge_features = torch.cat(all_edge_features, dim=0)
+    pairwise_mask = torch.cat(all_pairwise_masks, dim=0)
+    edge_a = torch.cat(all_edge_a, dim=0)
+    edge_b = torch.cat(all_edge_b, dim=0)
+    edge_c = torch.cat(all_edge_c, dim=0)
+    b_degenerate_mask = torch.cat(all_b_deg, dim=0)
+    c_degenerate_mask = torch.cat(all_c_deg, dim=0)
+    reverse_edge_idx = torch.cat(all_reverse_idx, dim=0) if all_reverse_idx else None
+
+    # 3. 타겟 정보 합치기
+    normalized_target = torch.cat([d.targetpack.normalized_target for d in batch], dim=0)
+
+    # 4. 완벽하게 조립된 DataPack 생성
+    new_nodepack = batch[0].nodepack._replace(node_features=node_features)
+    
+    new_edgepack = batch[0].edgepack._replace(
+        edge_features=edge_features,
+        receivers=receivers,
+        senders=senders,
+        pairwise_mask=pairwise_mask,
+        edge_a=edge_a, 
+        edge_b=edge_b, 
+        edge_c=edge_c,
+        reverse_edge_idx=reverse_edge_idx,
+        b_degenerate_mask=b_degenerate_mask,
+        c_degenerate_mask=c_degenerate_mask
+    )
+    
+    new_targetpack = batch[0].targetpack._replace(normalized_target=normalized_target)
+    
+    return DataPack(new_nodepack, new_edgepack, new_targetpack)
+
 def pre_accumulation(i, data_set : dataset.gns_dataset):
     if i % 10 == 0:
         print(i, "step")
@@ -219,10 +299,24 @@ def collate_fn(batch):
 
 def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
 
-    dataset_length = data_set.__len__()
-    train_length = dataset_length * nepochs
+    batch_size = 4
 
-    lr_decay_calculator = utils.lr_decay_calculator(dataset_length, train_length, lr_decay_length, decay_offset, secondary_decay_offset)
+    steps_per_epoch = data_set.__len__() // batch_size
+    train_length = steps_per_epoch * nepochs
+    adjusted_lr_decay_length = lr_decay_length // batch_size
+
+    lr_decay_calculator = utils.lr_decay_calculator(
+        steps_per_epoch, 
+        train_length, 
+        adjusted_lr_decay_length, 
+        decay_offset, 
+        secondary_decay_offset
+    )
+    
+    # dataset_length = data_set.__len__()
+    # train_length = dataset_length * nepochs
+
+    # lr_decay_calculator = utils.lr_decay_calculator(dataset_length, train_length, lr_decay_length, decay_offset, secondary_decay_offset)
 
     graph = gm.Graph(network_attributes_pack,
                      training_parameters_pack,
@@ -253,7 +347,7 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
     t0 = datetime.now()
     loss_list = []
 
-    batch_size = 1  # 배치 사이즈 증가로 GPU 활용도 높임
+    batch_size = 4  # 배치 사이즈 증가로 GPU 활용도 높임
     num_workers = 8  # 데이터 로딩/전처리를 비동기로 수행
     
     train_loader = DataLoader(
@@ -262,7 +356,7 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
-        collate_fn=collate_fn,
+        collate_fn=gns_collate_fn,
     )
 
     step = 0
@@ -279,7 +373,7 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
 
             graph.zero_grad()
 
-            lr_decay = lr_decay_calculator.get_lrd(step % dataset_length, epoch)
+            lr_decay = lr_decay_calculator.get_lrd(step % steps_per_epoch, epoch)
 
             graph.set_lr(lr * lr_decay)
 
