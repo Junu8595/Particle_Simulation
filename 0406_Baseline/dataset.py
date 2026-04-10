@@ -7,7 +7,7 @@ from dataclasses import replace as dc_replace
 import os
 import graph_builder
 from sklearn import neighbors
-from torch_geometric.nn import radius_graph
+
 
 
 @dataclass(frozen=False)
@@ -61,7 +61,7 @@ TargetPack = namedtuple(
 DataPack = namedtuple('DataPack', ['nodepack', 'edgepack', 'targetpack'])
 
 class gns_dataset(Dataset):
-    def __init__(self, dataset_properties_packs, normalizer_packs, device, mode='train'):
+    def __init__(self, dataset_properties_packs, normalizer_packs, device):
 
         self.maximum_mesh_edges = 0
         self.maximum_particle_edges = 0
@@ -70,7 +70,6 @@ class gns_dataset(Dataset):
 
         self.device = device
         self.ds_path = dataset_properties_packs.ds_path
-        self.mode = mode # 'train' 또는 'test'
 
         self.training_folder = dataset_properties_packs.training_path
         self.test_folder = dataset_properties_packs.testing_path
@@ -244,23 +243,24 @@ class gns_dataset(Dataset):
 
         if sub_particle_pos.shape[0] != 0:
             
-            # 1. radius_graph를 이용한 탐색
-            # sub_particle_pos가 GPU에 있다면 GPU 연산을, CPU에 있다면 최적화된 C++ CPU 연산을 수행합니다.
-            edge_index = radius_graph(
-                sub_particle_pos,                
-                r=contact_distance,           
-                batch=None,       
-                loop=False,         # 자기 자신(Self-loop) 연결 제외 (self_edge=False와 동일 효과)
-                max_num_neighbors=64 # 물리 시뮬레이션 밀도에 맞게 설정 (기본값 32)
-            )
+            # 1. KDTree를 위해 순수 CPU 텐서를 일시적으로 numpy로 변환
+            sub_pos_np = sub_particle_pos.numpy()
+            tree = neighbors.KDTree(sub_pos_np)
+            receiver_list = tree.query_radius(sub_pos_np, r = contact_distance)
 
-            # 2. edge_index 분리 [2, num_edges]
-            senders_sub = edge_index[0]   # 첫 번째 행: Senders
-            receivers_sub = edge_index[1] # 두 번째 행: Receivers
+            num_sub = len(sub_indices)
+            senders_sub = np.repeat(np.arange(num_sub), [len(a) for a in receiver_list])
+            receivers_sub = np.concatenate(receiver_list, axis=0)
+
+            # 2. 텐서 연산을 위해 다시 안전한 CPU 텐서로 원복 (Device Mismatch 완벽 차단)
+            senders_sub = torch.from_numpy(senders_sub).long()
+            receivers_sub = torch.from_numpy(receivers_sub).long()
 
             senders = sub_indices[senders_sub]
             receivers = sub_indices[receivers_sub]
         else:
+            #senders = np.empty((0,), dtype=sub_indices.dtype)
+            #receivers = np.empty((0,), dtype=sub_indices.dtype)
             senders = torch.empty((0,), dtype=sub_indices.dtype, device='cpu')
             receivers = torch.empty((0,), dtype=sub_indices.dtype, device='cpu')
 
@@ -268,6 +268,9 @@ class gns_dataset(Dataset):
             mask = receivers != senders
             receivers = receivers[mask]
             senders = senders[mask]
+
+        #receivers = torch.from_numpy(receivers).long().to('cpu')
+        #senders = torch.from_numpy(senders).long().to('cpu')
 
         edges = torch.vstack((receivers, senders)).unique(dim=1)
 
@@ -670,11 +673,4 @@ class gns_dataset(Dataset):
         return self.slice_datapack(raw_data_pack, particle_mask, mesh_mask)
     
     def __getitem__(self, idx):
-        if self.mode == 'train':
-            # 학습: 미리 구워둔 텐서 덩어리 초고속 로딩
-            baked_file_path = f'baked_training_data/step_{idx}.pt'
-            data_pack = torch.load(baked_file_path, weights_only=False)
-            return data_pack
-        else:
-            # 테스트/평가: 기존처럼 실시간 무거운 연산 수행
             return self.get_data(idx, self.contact_distance, False)

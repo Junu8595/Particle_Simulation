@@ -34,9 +34,9 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 train_flag = True
-one_step_flag = True
-roll_out_flag = False
-rotate_flag = False
+one_step_flag = False
+roll_out_flag = True
+rotate_flag = True
 fresh_start = True
 plot_flag = False
 
@@ -83,7 +83,7 @@ contact_distance = data_parameters_pack.contact_distance
 
 time = utils.get_time()
 load_path = './load_network/'
-test_network_path = '/home/ssdl/PJW/Particle_Simulation/saves_2026_04_06_16_41_34/'
+test_network_path = './test_network/'
 saving_path = './saves_' + time + '/'
 test_result_path = './test_result_' + time + '/'
 
@@ -568,7 +568,7 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
 
         print("Test Cycle : ", datetime.now() - t1)
 
-        if i == 10: # 디버깅 시 숫자, 본 학습 시 test_length
+        if i == test_length:
             stop_flag = True
         i += 1
         
@@ -654,10 +654,9 @@ def grid_test_cycle(test_set, graph, plot_flag, test_sequence_idx, max_particles
         height, width = 600, 600
 
         empty_space = np.ones((height, space, 3), dtype=np.uint8) * 255
-        fcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(test_network_path + 'xplane_large' + str(test_sequence_idx) + '.mp4', fcc, 30.0, (1260, 600))
-        # fcc = cv2.VideoWriter_fourcc(*'DIVX')
-        # out = cv2.VideoWriter(test_network_path + 'xplane_large' + str(test_sequence_idx) + '.avi', fcc, 30.0, (1260, 600))
+
+        fcc = cv2.VideoWriter_fourcc(*'DIVX')
+        out = cv2.VideoWriter(test_network_path + 'xplane_large' + str(test_sequence_idx) + '.avi', fcc, 30.0, (1260, 600))
                     
     t1 = datetime.now()
 
@@ -926,10 +925,10 @@ def grid_test_cycle(test_set, graph, plot_flag, test_sequence_idx, max_particles
 def main():
 
     if train_flag:
-        test_set = dataset.gns_dataset(data_parameters_pack, normalizer_pack, device, mode='test')
+        test_set = dataset.gns_dataset(data_parameters_pack, normalizer_pack, device)
         test_set.load_dataset(test_set.ds_path + test_set.test_folder)
 
-        data_set = dataset.gns_dataset(data_parameters_pack, normalizer_pack, device, mode='train')
+        data_set = dataset.gns_dataset(data_parameters_pack, normalizer_pack, device)
         data_set.load_dataset(data_set.ds_path + data_set.training_folder)
 
         test_set.noise_level = 0.0

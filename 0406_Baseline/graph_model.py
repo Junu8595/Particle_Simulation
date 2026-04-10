@@ -1,7 +1,6 @@
 import torch
 import graph_networks as gns
 from torch_scatter import scatter_softmax
-import torch_scatter
 
 class Graph():
     def __init__(self,
@@ -147,6 +146,9 @@ class Graph():
         # 4. Aggregation: 엣지 벡터들을 수신 노드(receivers) 기준으로 합산
         num_nodes = self.latent_node.shape[0]
         output = torch.zeros((num_nodes, 3), device=self.device, dtype=f_ij.dtype)
+        
+        # 여기서 scatter_add를 사용하기 위해 torch_scatter import 필요
+        import torch_scatter
         output = torch_scatter.scatter_add(f_ij, self.receivers, dim=0, out=output)
 
         if grid_flag:
