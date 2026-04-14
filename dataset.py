@@ -86,6 +86,8 @@ class gns_dataset(Dataset):
         self.lower = dataset_properties_packs.num_history
         self.upper = -2
 
+        self.bake_mode = False  # True일 때: normalizer/log-transform 생략, raw feature 저장
+
         self.node_type_dict = {'particle' : int(0),
                                'hopper' : int(1),
                                'roller1' : int(2),
@@ -341,11 +343,14 @@ class gns_dataset(Dataset):
         target_vel = next_vel.detach()
         target_pos = next_pos.detach()
 
-        normalized_target = self.target_normalizer.forward(target_acc[:particle_indices.shape[0]].to('cpu'), accumulate = True)
-        normalized_target = self.target_normalizer.forward(target_acc.to('cpu'), accumulate = False).detach().to('cpu').clone()
-
-        normalized_target_sign = torch.where(normalized_target >= 0.0, 1, -1)
-        normalized_target = torch.log(normalized_target.abs() + 1) * normalized_target_sign
+        if not self.bake_mode:
+            normalized_target = self.target_normalizer.forward(target_acc[:particle_indices.shape[0]].to('cpu'), accumulate=True)
+            normalized_target = self.target_normalizer.forward(target_acc.to('cpu'), accumulate=False).detach().to('cpu').clone()
+            normalized_target_sign = torch.where(normalized_target >= 0.0, 1, -1)
+            normalized_target = torch.log(normalized_target.abs() + 1) * normalized_target_sign
+        else:
+            # bake_mode: raw target_acc 그대로 저장 (normalization/log-transform 생략)
+            normalized_target = target_acc.detach().to('cpu').clone()
 
         # =========================================================
         # Edge local frame for particle-particle edges only
@@ -389,6 +394,34 @@ class gns_dataset(Dataset):
             b_degenerate_mask[:num_pairwise_edges] = b_degenerate_mask_pw
             c_degenerate_mask[:num_pairwise_edges] = c_degenerate_mask_pw
 
+        # === Issue #1 Fix: Contact edge local frame ===
+        # PP 엣지와 달리 Contact(PM) 엣지는 역방향 엣지가 없으므로,
+        # mesh face normal을 이용해 직교 프레임을 구성한다.
+        num_contact_edges = num_total_edges - num_pairwise_edges
+        if num_contact_edges > 0:
+            # a: 입자에서 접촉점 방향
+            contact_rel_pos = pos[senders[num_pairwise_edges:]] - pos[receivers[num_pairwise_edges:]]
+            contact_a = graph_builder.safe_normalize(contact_rel_pos)
+
+            # b: face normal에서 a 성분 제거 (Gram-Schmidt)
+            contact_normal = mesh_norm[:, :3]  # build_boundary_edge가 반환한 face normal
+            a_dot_n = torch.sum(contact_normal * contact_a, dim=1, keepdim=True)
+            normal_perp = contact_normal - a_dot_n * contact_a
+            contact_b = graph_builder.safe_normalize(normal_perp)
+
+            # degenerate: |normal_perp| < 1e-4 이면 GS가 수치적으로 불안정
+            # (face normal이 contact_a와 거의 평행할 때 float32 오차로 방향이 왜곡됨)
+            b_degen = torch.norm(normal_perp, dim=1) < 1e-4
+            if b_degen.any():
+                contact_b[b_degen] = graph_builder.build_fallback_b_from_a(contact_a[b_degen])
+
+            # c: a x b
+            contact_c = graph_builder.safe_normalize(torch.cross(contact_a, contact_b, dim=-1))
+
+            edge_a[num_pairwise_edges:] = contact_a
+            edge_b[num_pairwise_edges:] = contact_b
+            edge_c[num_pairwise_edges:] = contact_c
+
         # relative position / velocity
         rel_pos = pos[senders] - pos[receivers]                 # (E, 3)
         dist = torch.norm(rel_pos, dim=1, keepdim=True)         # (E, 1)
@@ -410,13 +443,32 @@ class gns_dataset(Dataset):
             dv_local[pw, 1] = torch.sum(rel_vel[pw] * edge_b[pw], dim=1)
             dv_local[pw, 2] = torch.sum(rel_vel[pw] * edge_c[pw], dim=1)
 
+        # === Issue #2 Fix: Contact edge feature projection ===
+        # #1 수정 후 contact 엣지에도 유효한 local frame이 있으므로
+        # PP와 동일하게 rel_pos / rel_vel을 local frame에 project한다.
+        cm = ~pairwise_mask  # contact mask
+        if cm.any():
+            dx_local[cm, 0] = torch.sum(rel_pos[cm] * edge_a[cm], dim=1)
+            dx_local[cm, 1] = torch.sum(rel_pos[cm] * edge_b[cm], dim=1)
+            dx_local[cm, 2] = torch.sum(rel_pos[cm] * edge_c[cm], dim=1)
+
+            dv_local[cm, 0] = torch.sum(rel_vel[cm] * edge_a[cm], dim=1)
+            dv_local[cm, 1] = torch.sum(rel_vel[cm] * edge_b[cm], dim=1)
+            dv_local[cm, 2] = torch.sum(rel_vel[cm] * edge_c[cm], dim=1)
+
       # 최종 scalarized edge feature: 7차원
         edge_features = torch.hstack([dist, dx_local, dv_local])
-        edge_features = self.edge_normalizer(edge_features.to('cpu'), accumulate=True).to('cpu')
+        if not self.bake_mode:
+            edge_features = self.edge_normalizer(edge_features.to('cpu'), accumulate=True).to('cpu')
+        else:
+            edge_features = edge_features.to('cpu')
 
         # node feature
         node_features = torch.hstack((vel, node_type, norm))
-        node_features = self.node_normalizer(node_features.to('cpu'), accumulate=True).to('cpu')
+        if not self.bake_mode:
+            node_features = self.node_normalizer(node_features.to('cpu'), accumulate=True).to('cpu')
+        else:
+            node_features = node_features.to('cpu')
 
         nodepack = NodePack(
             node_features,
@@ -673,28 +725,24 @@ class gns_dataset(Dataset):
         if self.mode == 'train':
             baked_file_path = f'baked_training_data/step_{idx}.pt'
             data_pack = torch.load(baked_file_path, weights_only=False)
-            
-            # 🧪 [정밀 타격 수리공] 비어있는 pairwise_mask만 채워 넣습니다.
-            if data_pack.edgepack.pairwise_mask is None:
-                
-                # 1. 입자(Particle)들의 노드 번호를 가져옵니다.
-                p_idx = data_pack.nodepack.particle_indices
-                
-                # 2. 엣지를 보내는 쪽과 받는 쪽 노드 번호를 가져옵니다.
-                senders = data_pack.edgepack.senders
-                receivers = data_pack.edgepack.receivers
-                
-                # 3. 양쪽 모두 '입자'인 경우만 찾아냅니다. (이게 바로 PP 마스크입니다)
-                # torch.isin을 쓰면 senders/receivers가 입자 번호 목록(p_idx)에 있는지 완벽히 검사합니다.
-                is_sender_particle = torch.isin(senders, p_idx)
-                is_receiver_particle = torch.isin(receivers, p_idx)
-                
-                pairwise_mask = is_sender_particle & is_receiver_particle
-                
-                # 4. _replace를 이용해 비어있던 칸(pairwise_mask)만 새 값으로 교체합니다.
-                new_edgepack = data_pack.edgepack._replace(pairwise_mask=pairwise_mask)
-                data_pack = data_pack._replace(edgepack=new_edgepack)
-                
-            return data_pack
+
+            # baked .pt 파일은 raw(비정규화) feature를 담고 있음.
+            # 여기서 training normalizer를 적용하고 log-transform을 수행한다.
+            node_features = self.node_normalizer(data_pack.nodepack.node_features, accumulate=True)
+            edge_features = self.edge_normalizer(data_pack.edgepack.edge_features, accumulate=True)
+
+            # targetpack.normalized_target에는 raw target_acc가 저장되어 있음 (bake_mode=True로 구운 경우)
+            raw_target = data_pack.targetpack.normalized_target
+            particle_idx = data_pack.nodepack.particle_indices
+            # particle 노드만으로 통계 누적, 전체 노드에 적용
+            _ = self.target_normalizer.forward(raw_target[:particle_idx.shape[0]], accumulate=True)
+            normalized_target = self.target_normalizer.forward(raw_target, accumulate=False).detach()
+            nt_sign = torch.where(normalized_target >= 0.0, 1, -1)
+            normalized_target = torch.log(normalized_target.abs() + 1) * nt_sign
+
+            new_np = data_pack.nodepack._replace(node_features=node_features)
+            new_ep = data_pack.edgepack._replace(edge_features=edge_features)
+            new_tp = data_pack.targetpack._replace(normalized_target=normalized_target)
+            return DataPack(new_np, new_ep, new_tp)
         else:
             return self.get_data(idx, self.contact_distance, False)

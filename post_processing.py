@@ -37,8 +37,8 @@ def plot_performance_comparison(gt_pos, gt_vel, anti_pos, anti_vel):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # [Subplot 1] RMSE 오차 누적 그래프
-    axes[0].plot(steps, rmse_anti, label='Our Model (50k steps)', color='blue', linewidth=2)
-    axes[0].set_title('Rollout Position RMSE over Time')
+    axes[0].plot(steps, rmse_anti, label='Prediction', color='blue', linewidth=2)
+    axes[0].set_title('Position RMSE')
     axes[0].set_xlabel('Time Step')
     axes[0].set_ylabel('RMSE')
     axes[0].legend()
@@ -46,10 +46,10 @@ def plot_performance_comparison(gt_pos, gt_vel, anti_pos, anti_vel):
 
     # [Subplot 2] 선운동량 보존 그래프
     axes[1].plot(steps, mom_gt, label='Ground Truth', color='black', linestyle=':', linewidth=2)
-    axes[1].plot(steps, mom_anti, label='Our Model (50k steps)', color='blue', linewidth=2)
-    axes[1].set_title('Total Linear Momentum Conservation')
+    axes[1].plot(steps, mom_anti, label='Prediction', color='blue', linewidth=2)
+    axes[1].set_title('Linear Momentum Conservation')
     axes[1].set_xlabel('Time Step')
-    axes[1].set_ylabel('Momentum Magnitude (|P|)')
+    axes[1].set_ylabel('P')
     axes[1].legend()
     axes[1].grid(True)
 
@@ -62,7 +62,7 @@ if __name__ == "__main__":
     
     # 렌더링이 완료된 후 생성된 npy 파일의 경로
     # (주의: 실제 저장된 폴더명과 일치하는지 확인하세요!)
-    path = '/home/ssdl/PJW/Particle_Simulation/saves_2026_04_06_16_41_34/'
+    path = r'C:/Users/AISDL_PJW/Particle_Simulation/test_result_2026_04_11_14_58_34_epoch140/'
     
     # Numpy 배열로 로드
     pred_data = np.load(path + 'pred.npy')

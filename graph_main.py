@@ -34,12 +34,12 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-train_flag = True
-one_step_flag = True
-roll_out_flag = False
+train_flag = False
+one_step_flag = False
+roll_out_flag = True   # True로 하고 test
 rotate_flag = False
-fresh_start = True
-plot_flag = False
+fresh_start = False         # False로 하고 test
+plot_flag = True
 
 def mem(tag=""):
     if torch.cuda.is_available():
@@ -84,7 +84,7 @@ contact_distance = data_parameters_pack.contact_distance
 
 time = utils.get_time()
 load_path = './load_network/'
-test_network_path = '/home/ssdl/PJW/Particle_Simulation/saves_2026_04_06_16_41_34/'
+test_network_path = r'C:/Users/AISDL_PJW/Particle_Simulation/saves_2026_04_11_14_58_34_epoch260/'
 saving_path = './saves_' + time + '/'
 test_result_path = './test_result_' + time + '/'
 
@@ -300,7 +300,8 @@ def collate_fn(batch):
 def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
 
     batch_size = 4
-
+    num_workers = 8  # 데이터 로딩/전처리를 비동기로 수행
+    
     steps_per_epoch = data_set.__len__() // batch_size
     train_length = steps_per_epoch * nepochs
     adjusted_lr_decay_length = lr_decay_length // batch_size
@@ -346,9 +347,6 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
 
     t0 = datetime.now()
     loss_list = []
-
-    batch_size = 4  # 배치 사이즈 증가로 GPU 활용도 높임
-    num_workers = 8  # 데이터 로딩/전처리를 비동기로 수행
     
     train_loader = DataLoader(
         data_set,
@@ -662,7 +660,7 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
 
         print("Test Cycle : ", datetime.now() - t1)
 
-        if i == 10: # 디버깅 시 숫자, 본 학습 시 test_length
+        if i == test_length: # 디버깅 시 숫자, 본 학습 시 test_length
             stop_flag = True
         i += 1
         

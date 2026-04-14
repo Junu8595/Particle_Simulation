@@ -26,6 +26,9 @@ def main():
     data_set = dataset.gns_dataset(data_parameters_pack, normalizer_pack, device)
     data_set.load_dataset(data_set.ds_path + data_set.training_folder)
 
+    # Issue #3 Fix: bake_mode=True → normalizer/log-transform 생략, raw feature 저장
+    data_set.bake_mode = True
+
     # 4. 저장할 폴더 생성
     save_dir = 'baked_training_data'
     os.makedirs(save_dir, exist_ok=True)
