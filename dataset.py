@@ -583,7 +583,8 @@ class gns_dataset(Dataset):
     def reverse_output(self, output, updated_pos, updated_vel):
         output = output.to('cpu')        
         output_sign = torch.where(output >= 0.0, 1, -1)
-        output = (torch.pow(np.e * torch.ones(output.shape, device='cpu'), output.abs()) - 1) * output_sign
+        output = torch.clamp(output.abs(), max=10.0)
+        output = (torch.pow(np.e * torch.ones(output.shape, device='cpu'), output) - 1) * output_sign
         acc_prediction = self.target_normalizer.inverse(output)
         
         updated_pos = updated_pos.to('cpu')
