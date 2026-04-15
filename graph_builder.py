@@ -95,15 +95,28 @@ def project_vector(vec, basis):
 
 def build_reverse_edge_index(receivers, senders):
     device = receivers.device
+    E = receivers.shape[0]
+    if E == 0:
+        return torch.full((0,), -1, dtype=torch.long, device=device)
 
-    edge_dict = {}
-    for idx, (r, s) in enumerate(zip(receivers.tolist(), senders.tolist())):
-        edge_dict[(r, s)] = idx
+    N = int(max(receivers.max().item(), senders.max().item())) + 1
 
-    reverse_edge_idx = torch.full((receivers.shape[0],), -1, dtype=torch.long, device=device)
+    # 각 edge (r, s)를 unique scalar ID로 인코딩
+    fwd_ids = receivers * N + senders   # (E,)
+    rev_ids = senders * N + receivers   # (E,) — 각 edge의 역방향 ID
 
-    for idx, (r, s) in enumerate(zip(receivers.tolist(), senders.tolist())):
-        reverse_edge_idx[idx] = edge_dict.get((s, r), -1)
+    sorted_ids, sort_perm = torch.sort(fwd_ids)
+
+    # 각 rev_id가 sorted_ids에서 어느 위치인지 탐색 (O(E log E))
+    ins = torch.searchsorted(sorted_ids, rev_ids)
+    ins_clamped = ins.clamp(0, E - 1)
+
+    in_bounds = ins < E
+    matched = sorted_ids[ins_clamped] == rev_ids
+    valid = in_bounds & matched
+
+    reverse_edge_idx = torch.full((E,), -1, dtype=torch.long, device=device)
+    reverse_edge_idx[valid] = sort_perm[ins_clamped[valid]]
 
     return reverse_edge_idx
 
@@ -307,30 +320,19 @@ def build_edge_local_frame_3d(pos,
     # c_ij = cross(b_parallel, b) (build_c_ij 방식)
     edge_c, c_degenerate_mask = build_c_ij(edge_a, edge_b, b_parallel, eps)
 
-    # antisymmetry 강제: reverse edge가 있으면 기준 edge로부터 반대부호 복사
-    visited = torch.zeros(num_edges, dtype=torch.bool, device=device)
+    # antisymmetry 강제: i < j인 쌍에서 edge_a/b/c[j] = -edge_a/b/c[i] 복사 (벡터화)
+    i_idx = torch.arange(num_edges, device=device)
+    valid_rev = reverse_edge_idx >= 0
+    j_idx = reverse_edge_idx.clamp(min=0)  # 인덱싱 안전을 위해 clamp
 
-    for i in range(num_edges):
-        if visited[i]:
-            continue
+    primary_mask = valid_rev & (i_idx < j_idx)
+    j_targets = j_idx[primary_mask]
 
-        j = reverse_edge_idx[i].item()
-
-        if j >= 0:
-            if i < j:
-                edge_a[j] = -edge_a[i]
-                edge_b[j] = -edge_b[i]
-                edge_c[j] = -edge_c[i]
-
-                b_degenerate_mask[j] = b_degenerate_mask[i]
-                c_degenerate_mask[j] = c_degenerate_mask[i]
-
-                visited[i] = True
-                visited[j] = True
-            else:
-                continue
-        else:
-            visited[i] = True
+    edge_a[j_targets] = -edge_a[primary_mask]
+    edge_b[j_targets] = -edge_b[primary_mask]
+    edge_c[j_targets] = -edge_c[primary_mask]
+    b_degenerate_mask[j_targets] = b_degenerate_mask[primary_mask]
+    c_degenerate_mask[j_targets] = c_degenerate_mask[primary_mask]
 
     return (
         edge_a,

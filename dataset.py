@@ -245,16 +245,16 @@ class gns_dataset(Dataset):
             sub_particle_pos = sub_particle_pos[None, :]   # (1,3)
 
         if sub_particle_pos.shape[0] != 0:
-            
-            # 1. radius_graph를 이용한 탐색
-            # sub_particle_pos가 GPU에 있다면 GPU 연산을, CPU에 있다면 최적화된 C++ CPU 연산을 수행합니다.
+
+            # 1. radius_graph: GPU로 이동해서 연산 후 CPU로 복귀
+            _dev = self.device
             edge_index = radius_graph(
-                sub_particle_pos,                
-                r=contact_distance,           
-                batch=None,       
-                loop=False,         # 자기 자신(Self-loop) 연결 제외 (self_edge=False와 동일 효과)
-                max_num_neighbors=64 # 물리 시뮬레이션 밀도에 맞게 설정 (기본값 32)
-            )
+                sub_particle_pos.to(_dev),
+                r=contact_distance,
+                batch=None,
+                loop=False,
+                max_num_neighbors=64
+            ).cpu()
 
             # 2. edge_index 분리 [2, num_edges]
             senders_sub = edge_index[0]   # 첫 번째 행: Senders
@@ -284,8 +284,15 @@ class gns_dataset(Dataset):
         norm = norm.repeat(num_nodes, 1).to('cpu')
 
         if mesh_pos.shape[0] != 0:
-            mesh_receivers, contact_pos, contact_vel, contact_type, mesh_norm = graph_builder.build_boundary_edge(cells[:,1:], particle_pos, mesh_pos, particle_indices, mesh_node_type, mesh_vel, 'cpu', contact_distance)
-
+            # build_boundary_edge: GPU로 연산 후 CPU로 복귀
+            mesh_receivers, contact_pos, contact_vel, contact_type, mesh_norm = graph_builder.build_boundary_edge(
+                cells[:,1:], particle_pos, mesh_pos, particle_indices, mesh_node_type, mesh_vel,
+                self.device, contact_distance)
+            mesh_receivers = mesh_receivers.cpu()
+            contact_pos    = contact_pos.cpu()
+            contact_vel    = contact_vel.cpu()
+            contact_type   = contact_type.cpu()
+            mesh_norm      = mesh_norm.cpu()
         else:
             mesh_receivers = torch.empty((0), device='cpu', dtype = receivers.dtype)
             contact_pos = torch.empty((0,particle_pos.shape[1]), device='cpu', dtype=particle_pos.dtype)

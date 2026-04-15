@@ -6,6 +6,7 @@ import attributes as attr
 def main():
     # 1. Device 설정 (굽는 과정은 CPU로 해도 무방하지만, 기본 세팅 유지)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print(f"Bake device: {device}")
     
     # 2. attributes.py에서 파라미터 가져오기 (graph_main.py와 동일한 방식)
     network_attributes_pack, training_attributes_pack = attr.attribute(device)
