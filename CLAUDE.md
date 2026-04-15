@@ -107,201 +107,62 @@ PyTorch, PyTorch Geometric (`radius_graph`), PyTorch Scatter (`scatter_add`, `sc
 
 ---
 
-## Known Issues & Fix Plan
-
-> Diagnosed via full code analysis + DYNAMI-CAL GRAPHNET paper comparison.
-> Issues are ordered by priority. **#1 and #2 must be fixed together** (same code block in `dataset.py`).
-> **#3 requires re-baking** all `.pt` files after fix.
-
-### Current Symptoms
-
-1. **Mesh(Roller) 관통**: Particle이 Roller/Hopper 표면을 뚫고 나감
-2. **중력 미학습**: Particle이 깃털처럼 느리게 떨어짐
-3. **비정상 튕김**: 간헐적으로 Particle이 예기치 못한 곳으로 튕겨져 나감
-
-### Fix Priority
-
-| Order | Issue | Severity | Files to Modify | Expected Impact |
-|-------|-------|----------|-----------------|-----------------|
-| 1 | #1 Contact edge local frame = 0 | CRITICAL | `dataset.py`, `graph_builder.py` | Roller 관통 해결 |
-| 2 | #2 Contact edge feature 0-padding | CRITICAL | `dataset.py` | Mesh 방향/속도 학습 |
-| 3 | #3 Normalizer baking 불일치 | CRITICAL | `preprocess_data.py`, `dataset.py` | 중력/튕김 해결 |
-| 4 | #4 collate_fn particle_indices | MEDIUM | `graph_main.py` | batch>1 지원 |
-| 5 | #5 Log/Exp 수치 불안정 | LOW | `dataset.py` | 안정성 향상 |
+## Known Issues & Fix History
 
 ---
 
-### Issue #1 [CRITICAL] Contact Edge Local Frame = (0,0,0)
+## ✅ All Issues Resolved (as of 2026-04-15)
 
-**Where**: `dataset.py` → `graph_data()`, around line 361-390
+Issues #1–#6 fully applied. Re-baked data (6176 `.pt` files) uploaded to remote server.
+Training ready to run: `cd /home/ssdl/PJW/Particle_Simulation && git pull && python graph_main.py`
 
-**Bug**: `edge_a`, `edge_b`, `edge_c` are initialized as `torch.zeros()` and only filled for PP edges (indices `[:num_pairwise_edges]`). Contact (PM) edges remain all zeros.
+| Issue | Commit | Summary |
+|-------|--------|---------|
+| #1 Contact edge local frame = 0 | `417de37` | Gram-Schmidt frame (a,b,c) built for PM edges via mesh face normal |
+| #2 Contact edge feature 0-padding | `417de37` | dx_local/dv_local projected for contact edges via `cm = ~pairwise_mask` |
+| #3 Normalizer baking mismatch | `417de37` | `bake_mode=True` stores raw features; normalization applied in `__getitem__()` |
+| #4 collate_fn particle_indices offset | `80e3bc8` | particle_indices / next_particle_indices accumulated with node_offset per batch element |
+| #5 Log/Exp numerical instability | `80e3bc8` | clamp(max=10.0) added in `reverse_output()` before exp |
+| #6 PP local frame b ∦ a | `192bed3` | velocity-based b'_ij (DYNAMI-CAL 방식) + Gram-Schmidt + cross(b_perp, a) |
 
-**Effect**: In `graph_model.py` decoder, `f_ij = s1*edge_a + s2*edge_b + s3*edge_c` → **f_ij = 0** for all contact edges → mesh forces are completely ignored → particles pass through rollers.
-
-**Fix**: Build a local frame for contact edges using mesh face normals from `build_boundary_edge()`.
-
-**Implementation** — add this block in `dataset.py` `graph_data()` after the PP local frame section:
-```python
-# === Contact edge local frame (after the PP local frame block) ===
-num_contact_edges = num_total_edges - num_pairwise_edges
-if num_contact_edges > 0:
-    contact_rel_pos = pos[senders[num_pairwise_edges:]] - pos[receivers[num_pairwise_edges:]]
-    contact_a = graph_builder.safe_normalize(contact_rel_pos)
-
-    # mesh_norm[:, :3] = face normal (returned by build_boundary_edge)
-    contact_normal = mesh_norm[:, :3]
-
-    # Gram-Schmidt: remove a-component from normal
-    a_dot_n = torch.sum(contact_normal * contact_a, dim=1, keepdim=True)
-    normal_perp = contact_normal - a_dot_n * contact_a
-    contact_b = graph_builder.safe_normalize(normal_perp)
-
-    # fallback for degenerate cases (normal parallel to a)
-    b_degen = torch.norm(normal_perp, dim=1) < 1e-12
-    if b_degen.any():
-        contact_b[b_degen] = graph_builder.build_fallback_b_from_a(contact_a[b_degen])
-
-    contact_c = graph_builder.safe_normalize(torch.cross(contact_a, contact_b, dim=-1))
-
-    edge_a[num_pairwise_edges:] = contact_a
-    edge_b[num_pairwise_edges:] = contact_b
-    edge_c[num_pairwise_edges:] = contact_c
-```
-
-**Verify**: After fix, check that `edge_a[num_pairwise_edges:]` has no zero-rows and that `(a·b)`, `(a·c)`, `(b·c)` are all near zero (orthogonality).
+**Validation on real step_0 data (2026-04-15):**
+- PP edges: 144,161 / PM edges: 15,982
+- PP `max |a·b| = 0.000000` ✅ (이전: 1.000000)
+- PM `max |a·b| = 0.000250` ✅
+- All frame vectors unit-norm, b_degenerate = 0
 
 ---
 
-### Issue #2 [CRITICAL] Contact Edge Feature 6/7 Dims = 0
+## preprocess_data.py — GPU 가속 (as of 2026-04-15, commit `b4dc180`)
 
-**Where**: `dataset.py` → `graph_data()`, around line 399-414
+`preprocess_data.py`는 GPU를 활용하도록 최적화됨. `self.device`가 `cuda:0`이면 자동으로 GPU 연산.
 
-**Bug**: `dx_local` and `dv_local` are computed only for `pairwise_mask == True`. Contact edges get `[dist, 0, 0, 0, 0, 0, 0]` as their 7D edge feature.
+**변경 내용:**
+- `build_reverse_edge_index()`: Python dict 루프(144K×2) → `searchsorted` 벡터화 O(E log E)
+- `build_edge_local_frame_3d()` antisymmetry 루프: Python for → 텐서 인덱싱
+- `radius_graph`: `sub_particle_pos.to(self.device)` 후 `.cpu()` 복귀
+- `build_boundary_edge`: `'cpu'` 하드코딩 → `self.device` 전달 후 출력 `.cpu()` 복귀
 
-**Effect**: Edge encoder receives no directional or velocity information for PM edges. Network cannot learn mesh interaction direction.
+**벤치마크 (RTX 4070 Super):** ~4s/step(CPU) → 0.41s/step(GPU), **10x 향상**, 6176 steps ≈ 40분
 
-**Fix**: Apply the same local-frame projection to contact edges. Add after the existing PP block:
-```python
-cm = ~pairwise_mask  # contact mask
-if cm.any():
-    dx_local[cm, 0] = torch.sum(rel_pos[cm] * edge_a[cm], dim=1)
-    dx_local[cm, 1] = torch.sum(rel_pos[cm] * edge_b[cm], dim=1)
-    dx_local[cm, 2] = torch.sum(rel_pos[cm] * edge_c[cm], dim=1)
-
-    dv_local[cm, 0] = torch.sum(rel_vel[cm] * edge_a[cm], dim=1)
-    dv_local[cm, 1] = torch.sum(rel_vel[cm] * edge_b[cm], dim=1)
-    dv_local[cm, 2] = torch.sum(rel_vel[cm] * edge_c[cm], dim=1)
-```
-
-**Note**: This fix depends on Issue #1 being applied first (contact edges need valid `edge_a/b/c`).
-
----
-
-### Issue #3 [CRITICAL] Pre-baking Normalizer ≠ Training Normalizer
-
-**Where**:
-- `preprocess_data.py` line 17-22: creates dummy normalizer with `max_accumulations=1`
-- `dataset.py` `graph_data()`: calls `normalizer.forward(x, accumulate=True)` which normalizes + stores stats
-- `dataset.py` `__getitem__()`: loads already-normalized `.pt` files
-- `graph_main.py` line 204-206: creates fresh normalizer with `max_accumulations=1e6`
-
-**Bug**: Baked `.pt` files contain features normalized by a dummy normalizer (only 1 sample of stats). Training creates a new normalizer that never sees raw features (only pre-normalized data). The two normalizers have completely different mean/std → `target_normalizer.inverse()` produces wrong scales at inference time.
-
-**Effect**: Acceleration predictions are scaled incorrectly → gravity too weak ("feather-fall") or too strong ("explosion").
-
-**Recommended Fix (Direction A)**: Save raw (un-normalized) features in `.pt` files. Apply normalization at training time in `__getitem__()`.
-
-**Step 1** — `preprocess_data.py`: Don't apply normalization during baking.
-Add a `bake_mode` flag to `gns_dataset` that skips normalizer calls in `graph_data()`:
-```python
-# In dataset.py, modify graph_data() normalizer calls:
-if not getattr(self, 'bake_mode', False):
-    edge_features = self.edge_normalizer(edge_features, accumulate=True)
-    node_features = self.node_normalizer(node_features, accumulate=True)
-    normalized_target = self.target_normalizer.forward(target_acc[:particle_indices.shape[0]], accumulate=True)
-    normalized_target = self.target_normalizer.forward(target_acc, accumulate=False)
-    # ... log transform ...
-else:
-    # In bake mode: skip normalization, store raw features
-    normalized_target = target_acc  # raw acceleration, no normalization, no log transform
-```
-In `preprocess_data.py`, set `data_set.bake_mode = True` before the baking loop.
-
-**Step 2** — `dataset.py` `__getitem__()`: Apply normalization when loading baked data:
-```python
-def __getitem__(self, idx):
-    if self.mode == 'train':
-        data_pack = torch.load(f'baked_training_data/step_{idx}.pt', weights_only=False)
-
-        # Apply training normalizer to raw features
-        node_features = self.node_normalizer(data_pack.nodepack.node_features, accumulate=True)
-        edge_features = self.edge_normalizer(data_pack.edgepack.edge_features, accumulate=True)
-
-        # Target: normalize then log-transform
-        target_acc = data_pack.targetpack.target_acc
-        particle_idx = data_pack.nodepack.particle_indices
-        _ = self.target_normalizer.forward(target_acc[:particle_idx.shape[0]], accumulate=True)
-        normalized_target = self.target_normalizer.forward(target_acc, accumulate=False)
-        nt_sign = torch.where(normalized_target >= 0.0, 1, -1)
-        normalized_target = torch.log(normalized_target.abs() + 1) * nt_sign
-
-        # Reconstruct DataPack with normalized features
-        new_np = data_pack.nodepack._replace(node_features=node_features)
-        new_ep = data_pack.edgepack._replace(edge_features=edge_features)
-        new_tp = data_pack.targetpack._replace(normalized_target=normalized_target)
-        return DataPack(new_np, new_ep, new_tp)
-```
-
-**Step 3** — Re-bake all data: `python preprocess_data.py`
-
-**Step 4** — `graph_main.py` pre-accumulation: The loop at line 334 calls `data_set[i]` which now triggers normalizer accumulation automatically. No change needed.
-
----
-
-### Issue #4 [MEDIUM] collate_fn Missing particle_indices Offset
-
-**Where**: `graph_main.py` → `gns_collate_fn()`, line 270
-
-**Bug**: `new_nodepack = batch[0].nodepack._replace(node_features=node_features)` keeps `particle_indices` and `next_particle_indices` from the first batch element only. With `batch_size > 1`, loss computation references wrong nodes.
-
-**Current impact**: `batch_size=1` → no effect now. Must fix before increasing batch size.
-
-**Fix**: Accumulate and offset `particle_indices` / `next_particle_indices` in the existing loop:
-```python
-all_particle_indices, all_next_particle_indices = [], []
-# ... inside the existing for d in batch loop:
-    all_particle_indices.append(d.nodepack.particle_indices + node_offset)
-    all_next_particle_indices.append(d.nodepack.next_particle_indices + node_offset)
-
-particle_indices = torch.cat(all_particle_indices, dim=0)
-next_particle_indices = torch.cat(all_next_particle_indices, dim=0)
-
-new_nodepack = NodePack(node_features, particle_indices, next_particle_indices,
-                        None, None, None)  # hopper/roller indices not used in training
+**Re-bake 명령:**
+```bash
+python preprocess_data.py   # attributes.py의 device 설정에 따라 자동으로 GPU/CPU 선택
 ```
 
 ---
 
-### Issue #5 [LOW] Log/Exp Numerical Instability
+## 🟡 Active Issues
 
-**Where**: `dataset.py` line 347 (log transform) and `reverse_output()` line 534 (exp inverse)
-
-**Bug**: `exp(|x|) - 1` amplifies small network errors exponentially. Combined with Issue #3, causes extreme values.
-
-**Fix**: Add clamp in `reverse_output()`:
-```python
-output = torch.clamp(output.abs(), max=10.0)  # cap at e^10 ≈ 22026
-output = (torch.pow(np.e * torch.ones_like(output), output) - 1) * output_sign
-```
+없음. 현재 알려진 버그 없음.
 
 ---
 
 ## Paper vs Current Code: Future Improvements (Non-blocking)
 
-These differences from the DYNAMI-CAL GRAPHNET paper affect performance but are NOT the cause of current training failure:
+These differences from the DYNAMI-CAL GRAPHNET paper affect performance but do NOT block training:
 
-1. **b'_ij construction**: Paper uses velocity + angular_velocity; current code uses reverse edge relative position only
+1. ~~**b'_ij construction**: Paper uses velocity + angular_velocity~~ → **#6에서 velocity 기반으로 수정 완료**
 2. **Spatiotemporal message passing**: Paper updates position/velocity via Euler integration at each MP step; current code only updates latent space
 3. **Boundary handling**: Paper uses ghost node reflection (mesh-free); current code uses mesh triangulation + closest point projection
 4. **Node-level decoding**: Paper decodes inverse mass/inertia from node embeddings; current code decodes acceleration directly from edge forces
