@@ -383,6 +383,7 @@ class gns_dataset(Dataset):
             c_degenerate_mask_pw,
             ) = graph_builder.build_edge_local_frame_3d(
             pos[:particle_pos.shape[0]],
+            vel[:particle_pos.shape[0], -3:],
             pair_receivers,
             pair_senders
             )

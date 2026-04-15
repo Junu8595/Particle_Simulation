@@ -250,6 +250,7 @@ def project_vectors_to_edge_frame(vectors, a, b, c):
     return torch.hstack([va, vb, vc])
 
 def build_edge_local_frame_3d(pos,
+                              vel,
                               receivers,
                               senders,
                               eps=1e-12):
@@ -258,6 +259,7 @@ def build_edge_local_frame_3d(pos,
 
     입력:
     - pos: (N, 3)
+    - vel: (N, 3)  — 현재 스텝 속도 (build_bprime_ij에 사용)
     - receivers: (E,)
     - senders: (E,)
 
@@ -294,63 +296,16 @@ def build_edge_local_frame_3d(pos,
     edge_a, rel_pos = build_a_ij(pos, receivers, senders, eps)
 
     # -----------------------------
-    # b_ij 구성
-    # 진행상황3 최소 구현:
-    # 속도 없이도 돌아가게, reverse edge의 상대위치 정보를 이용해
-    # a와 평행하지 않은 기준벡터를 만든 뒤 Gram-Schmidt 스타일로 구성
+    # b_ij 구성 (velocity-based, DYNAMI-CAL GRAPHNET 방식)
+    # b'_ij = normalize(v_j + v_i) + normalize((v_j - v_i) x r_ij)
+    # 이후 Gram-Schmidt + cross(b_perp, a) 로 a와 직교하는 b를 얻음
     # -----------------------------
-    rel_pos_rev = torch.zeros_like(rel_pos)
-    valid_rev = reverse_edge_idx >= 0
-    if valid_rev.any():
-        rel_pos_rev[valid_rev] = rel_pos[reverse_edge_idx[valid_rev]]
+    b_prime = build_bprime_ij(pos, vel, receivers, senders, omega=None, eps=eps)
 
-    b_prime = rel_pos - rel_pos_rev
+    edge_b, b_parallel, b_perp, b_degenerate_mask = build_b_ij(edge_a, b_prime, eps)
 
-    # reverse edge가 없거나 b_prime이 너무 작으면 fallback용 기준축 사용
-    small_bprime = torch.norm(b_prime, dim=-1) < eps
-    if small_bprime.any():
-        ex = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=dtype).expand(num_edges, -1)
-        ey = torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype).expand(num_edges, -1)
-        ez = torch.tensor([0.0, 0.0, 1.0], device=device, dtype=dtype).expand(num_edges, -1)
-
-        dots_x = torch.abs(torch.sum(edge_a * ex, dim=-1))
-        dots_y = torch.abs(torch.sum(edge_a * ey, dim=-1))
-        dots_z = torch.abs(torch.sum(edge_a * ez, dim=-1))
-
-        basis_stack = torch.stack([dots_x, dots_y, dots_z], dim=1)
-        min_axis = torch.argmin(basis_stack, dim=1)
-
-        ref = ex.clone()
-        ref[min_axis == 1] = ey[min_axis == 1]
-        ref[min_axis == 2] = ez[min_axis == 2]
-
-        b_prime[small_bprime] = ref[small_bprime]
-
-    # Gram-Schmidt: b_prime에서 a 성분 제거
-    b_parallel = project_vector(b_prime, edge_a)
-    b_perp = b_prime - b_parallel
-
-    b_perp_norm = torch.norm(b_perp, dim=-1)
-    b_degenerate_mask = b_perp_norm < eps
-
-    edge_b = safe_normalize(b_perp, eps)
-
-    if b_degenerate_mask.any():
-        fallback_b = build_fallback_b_from_a(edge_a[b_degenerate_mask], eps)
-        edge_b[b_degenerate_mask] = fallback_b
-
-    # c_ij = a_ij x b_ij
-    c_raw = torch.cross(edge_a, edge_b, dim=-1)
-    c_norm = torch.norm(c_raw, dim=-1)
-    c_degenerate_mask = c_norm < eps
-
-    edge_c = safe_normalize(c_raw, eps)
-
-    if c_degenerate_mask.any():
-        fallback_c = torch.cross(edge_a[c_degenerate_mask],
-                                 edge_b[c_degenerate_mask],
-                                 dim=-1)
-        edge_c[c_degenerate_mask] = safe_normalize(fallback_c, eps)
+    # c_ij = cross(b_parallel, b) (build_c_ij 방식)
+    edge_c, c_degenerate_mask = build_c_ij(edge_a, edge_b, b_parallel, eps)
 
     # antisymmetry 강제: reverse edge가 있으면 기준 edge로부터 반대부호 복사
     visited = torch.zeros(num_edges, dtype=torch.bool, device=device)
