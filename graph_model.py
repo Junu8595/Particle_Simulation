@@ -157,13 +157,7 @@ class Graph():
 
         self.loss = torch.pow(error[self.next_particle_indices], 2).sum(dim=1).mean()
 
-        if not train_flag:
-            self.sum = targetpack.normalized_target[self.next_particle_indices].sum(dim=1).mean()
-            loss_average = [self.loss.item(), torch.sqrt(self.loss).item()/self.sum.item()*100]
-        else:
-            self.sum = torch.pow(targetpack.normalized_target[self.next_particle_indices],2).sum(dim=1).mean()
-            self.loss = torch.sqrt(self.loss)/self.sum
-            loss_average = [self.loss.item(), error[self.next_particle_indices].abs().mean().item()]
+        loss_average = [self.loss.item(), error[self.next_particle_indices].abs().mean().item()]
 
         return output, loss_average
 

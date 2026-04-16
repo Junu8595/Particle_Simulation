@@ -6,6 +6,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Graph Neural Network-based DEM (Discrete Element Method) particle simulator. Predicts particle dynamics in industrial equipment (hoppers, rollers) by learning particle interactions through graph message-passing networks with local coordinate frame invariance. Based on the scalarization-vectorization paradigm from the DYNAMI-CAL GRAPHNET paper (Nature Communications, 2026).
 
+## Environment (Fixed — Do Not Re-discover)
+
+### Local Environment (Windows + WSL Ubuntu)
+- Project path: /mnt/c/Users/AISDL_PJW/Projects/Particle_Simulation/
+- Python: /mnt/c/Users/AISDL_PJW/AppData/Local/Programs/Python/Python312/python.exe
+- Git branch: main
+- GPU: RTX 4070 Super (CUDA available)
+
+### Remote Environment (Linux GPU Server)
+- SSH: ssdl@147.47.206.229
+- Project path: /home/ssdl/PJW/Particle_Simulation/
+- Conda env: PJW
+- GPU: Ada 6000 (use CUDA_VISIBLE_DEVICES=0, shared with 3 colleagues)
+
+### Dependencies (All Pre-installed)
+All dependencies listed in "Dependencies" section are already installed in both environments.
+Do NOT run pip/conda install. If an import fails, report it and stop.
+
+### Startup Rules for Claude Code
+1. Do NOT run environment discovery commands (which python, ls ~/.claude, pwd, etc.) — paths are documented above.
+2. Do NOT install packages — they already exist.
+3. Do NOT re-read large .npy/.pt files (>10MB) — use Python scripts to extract specific metrics.
+4. For pred.npy/targ.npy analysis, use the diagnostic script template in @debugger agent.
+5. Start requested tasks immediately without preliminary exploration.
+
 ## Running the Code
 
 All configuration is in `attributes.py` — edit that file first to set data paths and hyperparameters.
