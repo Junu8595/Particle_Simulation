@@ -136,9 +136,9 @@ PyTorch, PyTorch Geometric (`radius_graph`), PyTorch Scatter (`scatter_add`, `sc
 
 ---
 
-## ✅ All Issues Resolved (as of 2026-04-15)
+## ✅ All Issues Resolved (as of 2026-04-16)
 
-Issues #1–#6 fully applied. Re-baked data (6176 `.pt` files) uploaded to remote server.
+Issues #1–#7 fully applied. Re-baked data (6176 `.pt` files) uploaded to remote server.
 Training ready to run: `cd /home/ssdl/PJW/Particle_Simulation && git pull && python graph_main.py`
 
 | Issue | Commit | Summary |
@@ -149,6 +149,7 @@ Training ready to run: `cd /home/ssdl/PJW/Particle_Simulation && git pull && pyt
 | #4 collate_fn particle_indices offset | `80e3bc8` | particle_indices / next_particle_indices accumulated with node_offset per batch element |
 | #5 Log/Exp numerical instability | `80e3bc8` | clamp(max=10.0) added in `reverse_output()` before exp |
 | #6 PP local frame b ∦ a | `192bed3` | velocity-based b'_ij (DYNAMI-CAL 방식) + Gram-Schmidt + cross(b_perp, a) |
+| #7 Y-axis bias in loss | `759be33` | relative RMSE → plain MSE; normalizer의 per-axis z-score 정규화로 충분 |
 
 **Validation on real step_0 data (2026-04-15):**
 - PP edges: 144,161 / PM edges: 15,982
