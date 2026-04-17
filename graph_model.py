@@ -155,7 +155,7 @@ class Graph():
         # 5. Loss 계산 (기존 로직 유지)
         error = targetpack.normalized_target - output
 
-        self.loss = torch.pow(error[self.next_particle_indices], 2).sum(dim=1).mean()
+        self.loss = torch.pow(error[self.next_particle_indices], 2).mean(dim=0).mean()
 
         loss_average = [self.loss.item(), error[self.next_particle_indices].abs().mean().item()]
 
