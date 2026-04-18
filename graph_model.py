@@ -25,6 +25,8 @@ class Graph():
         self.process = self.processor
         self.decode = self.decoder
 
+        self._debug_step_count = 0  # decoder 축별 디버그 로깅용 카운터
+
 
     def _move_datapack_to_device(self, datapack, device):
         """datapack 내부의 모든 텐서를 지정된 device로 이동"""
@@ -152,10 +154,27 @@ class Graph():
         if grid_flag:
             return output
 
-        # 5. Loss 계산 (기존 로직 유지)
+        # 5. 축별 디버그 로깅 (train 시에만, 매 10000 decoder 호출마다)
+        if train_flag:
+            self._debug_step_count += 1
+            if self._debug_step_count % 10000 == 0:
+                with torch.no_grad():
+                    def _log_axis(t, label):
+                        print(f"[DEBUG step={self._debug_step_count}] {label}: "
+                              f"mean=({t[:,0].mean():.5f}, {t[:,1].mean():.5f}, {t[:,2].mean():.5f})  "
+                              f"std=({t[:,0].std():.5f}, {t[:,1].std():.5f}, {t[:,2].std():.5f})")
+                    _log_axis(output[self.next_particle_indices], "output[particles] (X,Y,Z)")
+                    if pw_mask.any():
+                        _log_axis(f_ij[pw_mask], "PP f_ij (X,Y,Z)")
+                    if pm_mask.any():
+                        _log_axis(f_ij[pm_mask], "PM f_ij (X,Y,Z)")
+
+        # 6. Loss 계산 (Classic GNN 방식 — relative RMSE)
         error = targetpack.normalized_target - output
 
-        self.loss = torch.pow(error[self.next_particle_indices], 2).mean(dim=0).mean()
+        self.loss = torch.pow(error[self.next_particle_indices], 2).sum(dim=1).mean()
+        self.sum = torch.pow(targetpack.normalized_target[self.next_particle_indices], 2).sum(dim=1).mean()
+        self.loss = torch.sqrt(self.loss) / self.sum
 
         loss_average = [self.loss.item(), error[self.next_particle_indices].abs().mean().item()]
 
