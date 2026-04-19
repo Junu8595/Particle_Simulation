@@ -67,22 +67,25 @@ def attribute(device):
     #decoder_pack = NetworkParamterPack('decoder', 3, latent_size, latent_size, 3, False, 1, True, False, device)
     edge_decoder_pp_pack = NetworkParamterPack('edge_decoder_pp', 3, latent_size, latent_size, 3, False, 1, True, False, device)
     edge_decoder_pm_pack = NetworkParamterPack('edge_decoder_pm', 3, latent_size, latent_size, 3, False, 1, True, False, device)
+    node_decoder_pack    = NetworkParamterPack('node_decoder',    3, latent_size, latent_size, 3, False, 1, True, False, device)
 
     NetworkAttributesPack = namedtuple('networkattributespack', ['edge_encoder',
                                                                  'node_encoder',
                                                                  'edge_messenger',
                                                                  'edge_attention',
                                                                  'node_messenger',
-                                                                 'edge_decoder_pp',   # 변경
-                                                                 'edge_decoder_pm'])  # 변경
-    
+                                                                 'edge_decoder_pp',
+                                                                 'edge_decoder_pm',
+                                                                 'node_decoder'])
+
     networkattributespack = NetworkAttributesPack(edge_encoder_pack,
                                                   node_encoder_pack,
                                                   edge_messenger_pack,
                                                   edge_attention_pack,
                                                   node_messenger_pack,
-                                                  edge_decoder_pp_pack,   # 변경
-                                                  edge_decoder_pm_pack)   # 변경
+                                                  edge_decoder_pp_pack,
+                                                  edge_decoder_pm_pack,
+                                                  node_decoder_pack)
 
     return networkattributespack, trainingattributespack
 

@@ -91,7 +91,7 @@ python post_processing.py
    - **Decoder**: Two separate edge MLPs — `edge_decoder_pp` for PP, `edge_decoder_pm` for PM
    - Output: 3 scalar coefficients `(s1, s2, s3)` per edge → force vector `f_ij = s1·a + s2·b + s3·c`
 
-5. **Loss**: Edge forces aggregated to nodes via `scatter_add`; MSE on normalized acceleration for particle nodes only. Log-transformed targets with relative RMSE loss.
+5. **Loss**: Edge forces aggregated to nodes via `scatter_add`; loss on normalized acceleration for particle nodes only. Log-transformed targets. Current: relative RMSE (`sqrt(MSE) / sum(target²)`, Classic GNN 방식) — Issue #7 조사 중.
 
 6. **Optimization**: Adam, exponential + linear LR decay, gradient clipping (`max_norm=3.0`).
 
@@ -136,10 +136,9 @@ PyTorch, PyTorch Geometric (`radius_graph`), PyTorch Scatter (`scatter_add`, `sc
 
 ---
 
-## ✅ All Issues Resolved (as of 2026-04-16)
+## ✅ Issues #1–#6 Resolved (as of 2026-04-16)
 
-Issues #1–#7 fully applied. Re-baked data (6176 `.pt` files) uploaded to remote server.
-Training ready to run: `cd /home/ssdl/PJW/Particle_Simulation && git pull && python graph_main.py`
+Re-baked data (6176 `.pt` files) uploaded to remote server.
 
 | Issue | Commit | Summary |
 |-------|--------|---------|
@@ -149,7 +148,6 @@ Training ready to run: `cd /home/ssdl/PJW/Particle_Simulation && git pull && pyt
 | #4 collate_fn particle_indices offset | `80e3bc8` | particle_indices / next_particle_indices accumulated with node_offset per batch element |
 | #5 Log/Exp numerical instability | `80e3bc8` | clamp(max=10.0) added in `reverse_output()` before exp |
 | #6 PP local frame b ∦ a | `192bed3` | velocity-based b'_ij (DYNAMI-CAL 방식) + Gram-Schmidt + cross(b_perp, a) |
-| #7 Y-axis bias in loss | `759be33` | relative RMSE → plain MSE; normalizer의 per-axis z-score 정규화로 충분 |
 
 **Validation on real step_0 data (2026-04-15):**
 - PP edges: 144,161 / PM edges: 15,982
@@ -178,9 +176,56 @@ python preprocess_data.py   # attributes.py의 device 설정에 따라 자동으
 
 ---
 
+## 🔄 Issue #7 — Y-axis rollout divergence (Loss function 조사 진행 중)
+
+**증상:** Rollout 초기(t=48)부터 Y축 위치 RMSE가 683mm로 폭발, t=192에서 ~3616mm.
+- Acc std ratio @ t=48: X≈0.18, Y≈3.87, Z≈0.37 — Y 과대예측, X/Z 과소예측
+- 40k / 100k / 260k step 모두 동일한 수치 → training stagnation
+
+### 조사 이력
+
+**시도 1: plain MSE (commit `759be33`)**
+- `error².sum(dim=1).mean()` → Y축 절대오차가 여전히 gradient 지배
+- acc ratio X=0.05, Y=2.26, Z=0.24 @ t=48 (100k steps)
+
+**시도 2: per-axis MSE (commit 이후)**
+- `error².mean(dim=0).mean()` → 수학적으로 plain MSE / 3 과 동일
+- gradient 구조 동일, 효과 없음. 40k/100k 결과 동일
+
+**시도 3: relative RMSE 복원 (Classic GNN 방식, 현재 상태)**
+- `sqrt(MSE) / sum(target²)` → 260k step 후 acc ratio 변화 없음 (X=0.183, Y=3.871, Z=0.375)
+- 40k → 260k 추가 220k step 학습에도 지표 고정 → stagnation 확인
+
+### 핵심 발견 (2026-04-19)
+
+**Normalizer는 정상 작동 중.**
+- `baked_training_data/step_0.pt` 검증 결과:
+  - Raw target_acc Y/X std 비율: 3.58x (중력 방향 물리적 신호)
+  - Log transform 후: 3.53x (값이 <<1이라 log≈linear, 효과 없음)
+  - Per-axis z-score 후: **1.000x** ✅ — normalized_target에서 Y/X/Z 분산 균등
+- **결론: loss function과 normalizer는 Y-bias의 원인이 아님**
+
+**Y-bias의 구조적 원인:**
+- 중력(-Y)으로 인해 입자가 수직 적층 → PP 엣지의 `a` 벡터가 Y 방향으로 편중
+- `f_ij = s1·a + s2·b + s3·c`에서 `s1*a`가 주로 Y 방향 기여
+- 모델이 s1(a축) 학습을 통한 Y force에 먼저 수렴 → b, c축(X/Z) 활성화 지연
+- 더 많은 학습이 필요한 구조적 특성이지 버그가 아닐 가능성
+
+### 현재 코드 상태 (graph_model.py)
+- Loss: relative RMSE (Classic GNN 동일 방식)
+- 디버그 로깅 추가: train 시 매 10,000 decoder 호출마다 output/PP f_ij/PM f_ij 축별 mean, std 출력
+
+### 다음 조사 방향 (미결)
+- 서버 로그에서 `[DEBUG step=N]` 출력으로 f_ij 축별 분포 추적
+- PP/PM f_ij에서 Y-axis std가 X/Z 대비 몇 배인지 확인 → 아키텍처 귀책 여부 판단
+- 옵션 A: plain MSE + 300k+ step 장기 학습
+- 옵션 B: per-axis loss weight (`w_X:w_Y:w_Z = k:1:k`, k>1)로 X/Z gradient 증폭
+
+---
+
 ## 🟡 Active Issues
 
-없음. 현재 알려진 버그 없음.
+없음 (Issue #7 조사 중, 위 참조).
 
 ---
 

@@ -84,9 +84,9 @@ contact_distance = data_parameters_pack.contact_distance
 
 time = utils.get_time()
 load_path = './load_network/'
-test_network_path = r'C:/Users/AISDL_PJW/Particle_Simulation/saves_2026_04_11_14_58_34_epoch260/'
+test_network_path = r'C:/Users/AISDL_PJW/Projects/Particle_Simulation/saves_2026_04_18_12_30_09/'
 saving_path = './saves_' + time + '/'
-test_result_path = './test_result_' + time + '/'
+test_result_path = './_test_result_2026_04_18_12_30_09/'
 
 def get_balanced_overlapping_grids(particle_pos, indices, max_particles, min_particles, overlap_ratio=0.2, particle_mask = None):
 

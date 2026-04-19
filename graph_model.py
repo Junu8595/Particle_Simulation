@@ -148,8 +148,12 @@ class Graph():
 
         # 4. Aggregation: 엣지 벡터들을 수신 노드(receivers) 기준으로 합산
         num_nodes = self.latent_node.shape[0]
-        output = torch.zeros((num_nodes, 3), device=self.device, dtype=f_ij.dtype)
-        output = torch_scatter.scatter_add(f_ij, self.receivers, dim=0, out=output)
+        edge_output = torch.zeros((num_nodes, 3), device=self.device, dtype=f_ij.dtype)
+        edge_output = torch_scatter.scatter_add(f_ij, self.receivers, dim=0, out=edge_output)
+
+        # 4b. Node-level residual decoder
+        node_residual = self.graph_net(self.graph_net.sub_nets.node_decoder, self.latent_node)
+        output = edge_output + node_residual
 
         if grid_flag:
             return output
@@ -164,6 +168,7 @@ class Graph():
                               f"mean=({t[:,0].mean():.5f}, {t[:,1].mean():.5f}, {t[:,2].mean():.5f})  "
                               f"std=({t[:,0].std():.5f}, {t[:,1].std():.5f}, {t[:,2].std():.5f})")
                     _log_axis(output[self.next_particle_indices], "output[particles] (X,Y,Z)")
+                    _log_axis(node_residual[self.next_particle_indices], "node_residual[particles] (X,Y,Z)")
                     if pw_mask.any():
                         _log_axis(f_ij[pw_mask], "PP f_ij (X,Y,Z)")
                     if pm_mask.any():
