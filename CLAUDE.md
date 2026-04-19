@@ -86,12 +86,23 @@ python post_processing.py
    - All features normalized via `normalizer.py` (online running statistics)
 
 4. **GNN Forward Pass** (`graph_model.py` → `graph_networks.py`):
-   - **Encoder**: 25D→128D nodes, 7D→128D edges (MLPs with LayerNorm)
-   - **Processor**: 10 message-passing steps with attention + residual connections
-   - **Decoder**: Two separate edge MLPs — `edge_decoder_pp` for PP, `edge_decoder_pm` for PM
-   - Output: 3 scalar coefficients `(s1, s2, s3)` per edge → force vector `f_ij = s1·a + s2·b + s3·c`
+   - **① Encoder**: 25D→128D nodes, 7D→128D edges (MLPs with LayerNorm)
+   - **② Processor**: 10 message-passing steps with attention + residual connections
+   - **③ Decoder** — 두 경로의 합산:
 
-5. **Loss**: Edge forces aggregated to nodes via `scatter_add`; loss on normalized acceleration for particle nodes only. Log-transformed targets. Current: relative RMSE (`sqrt(MSE) / sum(target²)`, Classic GNN 방식) — Issue #7 조사 중.
+   **■ Edge Force Decoder (Pairwise Interaction)**
+   - Scalar coefficient 출력: (E, 128) → (E, 3) — PP/PM decoder 분리 (pairwise_mask)
+   - `f_ij = s1·a + s2·b + s3·c` vectorization (edge local frame 기반)
+   - `scatter_add(f_ij, receivers)` → Δv_internal = Σ f_ij  *(Newton 제3법칙 보존)*
+
+   **■ External Force Decoder (Non-pairwise Force)**  ← 신규 (`node_decoder`)
+   - Node latent에서 직접 출력: (N, 128) → (N, 3)
+   - 중력 등 외력 + edge로 표현 불가한 잔여 성분 보정
+   - → Δv_ext = ψ(h_i)  *(논문 Fig.1c)*
+
+   **■ 최종 출력**: `output = edge_output + node_residual` → Δv_net = Δv_internal + Δv_ext
+
+5. **Loss**: `normalized_target - output` on particle nodes only. Relative RMSE: `sqrt(MSE) / sum(target²)` (Classic GNN 방식) — Issue #7 조사 중.
 
 6. **Optimization**: Adam, exponential + linear LR decay, gradient clipping (`max_norm=3.0`).
 
@@ -107,7 +118,7 @@ python post_processing.py
 |---|---|
 | `attributes.py` | **Single source of truth** for all hyperparameters, network dims, data paths |
 | `graph_main.py` | Entry point; training loop with DataLoader; test cycles; spatial tiling; `gns_collate_fn()` |
-| `graph_model.py` | Graph wrapper: encode→process→decode; dual decoder (PP/PM); loss computation |
+| `graph_model.py` | Graph wrapper: encode→process→decode; Edge Force Decoder (PP/PM) + External Force Decoder (`node_decoder`); loss |
 | `graph_networks.py` | MLP building blocks; `graph_net` module with `sub_nets` ModuleList |
 | `graph_builder.py` | `build_edge_local_frame_3d()`, `build_boundary_edge()`, `safe_normalize()`, `build_fallback_b_from_a()` |
 | `dataset.py` | Data loading; `RawDataPack → DataPack`; `graph_data()` feature engineering; `__getitem__()` for baked data |
@@ -157,69 +168,36 @@ Re-baked data (6176 `.pt` files) uploaded to remote server.
 
 ---
 
-## preprocess_data.py — GPU 가속 (as of 2026-04-15, commit `b4dc180`)
+## preprocess_data.py — GPU 가속 (commit `b4dc180`, 2026-04-15)
 
-`preprocess_data.py`는 GPU를 활용하도록 최적화됨. `self.device`가 `cuda:0`이면 자동으로 GPU 연산.
+GPU 자동 사용 (`self.device = cuda:0`). `searchsorted` 벡터화 + 텐서 인덱싱으로 ~4s/step → 0.41s/step (**10x**), 6176 steps ≈ 40분.
 
-**변경 내용:**
-- `build_reverse_edge_index()`: Python dict 루프(144K×2) → `searchsorted` 벡터화 O(E log E)
-- `build_edge_local_frame_3d()` antisymmetry 루프: Python for → 텐서 인덱싱
-- `radius_graph`: `sub_particle_pos.to(self.device)` 후 `.cpu()` 복귀
-- `build_boundary_edge`: `'cpu'` 하드코딩 → `self.device` 전달 후 출력 `.cpu()` 복귀
-
-**벤치마크 (RTX 4070 Super):** ~4s/step(CPU) → 0.41s/step(GPU), **10x 향상**, 6176 steps ≈ 40분
-
-**Re-bake 명령:**
 ```bash
-python preprocess_data.py   # attributes.py의 device 설정에 따라 자동으로 GPU/CPU 선택
+python preprocess_data.py
 ```
 
 ---
 
-## 🔄 Issue #7 — Y-axis rollout divergence (Loss function 조사 진행 중)
+## 🔄 Issue #7 — Y-axis rollout divergence (조사 진행 중)
 
-**증상:** Rollout 초기(t=48)부터 Y축 위치 RMSE가 683mm로 폭발, t=192에서 ~3616mm.
-- Acc std ratio @ t=48: X≈0.18, Y≈3.87, Z≈0.37 — Y 과대예측, X/Z 과소예측
-- 40k / 100k / 260k step 모두 동일한 수치 → training stagnation
+**증상:** t=48에서 Y-RMSE 683mm 폭발, t=192에서 ~3616mm. Acc std ratio @ t=48: X≈0.18, Y≈3.87, Z≈0.37. 40k/100k/260k step 동일 → stagnation.
 
-### 조사 이력
+**조사 이력:**
 
-**시도 1: plain MSE (commit `759be33`)**
-- `error².sum(dim=1).mean()` → Y축 절대오차가 여전히 gradient 지배
-- acc ratio X=0.05, Y=2.26, Z=0.24 @ t=48 (100k steps)
+| 시도 | 공식 | 결과 |
+|------|------|------|
+| 1: plain MSE | `error².sum(dim=1).mean()` | X=0.05, Y=2.26, Z=0.24 @ 100k |
+| 2: per-axis MSE | `error².mean(dim=0).mean()` | plain MSE/3과 동일, 효과 없음 |
+| 3: relative RMSE (현재) | `sqrt(MSE)/sum(target²)` | X=0.183, Y=3.871, Z=0.375 @ 260k, 변화 없음 |
 
-**시도 2: per-axis MSE (commit 이후)**
-- `error².mean(dim=0).mean()` → 수학적으로 plain MSE / 3 과 동일
-- gradient 구조 동일, 효과 없음. 40k/100k 결과 동일
+**핵심 발견 (2026-04-19):**
+- Normalizer 정상 ✅ — z-score 후 Y/X/Z std 비율 = 1.000 (loss·normalizer는 원인 아님)
+- Y-bias 구조적 원인: 중력 적층으로 PP 엣지 `a` 벡터가 Y 방향 편중 → `s1·a`가 Y force 지배
+- **대응:** External Force Decoder (`node_decoder`) 추가로 edge 독립적 보정 경로 확보 (commit `b1dcd03`)
 
-**시도 3: relative RMSE 복원 (Classic GNN 방식, 현재 상태)**
-- `sqrt(MSE) / sum(target²)` → 260k step 후 acc ratio 변화 없음 (X=0.183, Y=3.871, Z=0.375)
-- 40k → 260k 추가 220k step 학습에도 지표 고정 → stagnation 확인
+**현재 코드:** relative RMSE + 매 10k step `[DEBUG]` 로깅 (output/node_residual/f_ij 축별 stats)
 
-### 핵심 발견 (2026-04-19)
-
-**Normalizer는 정상 작동 중.**
-- `baked_training_data/step_0.pt` 검증 결과:
-  - Raw target_acc Y/X std 비율: 3.58x (중력 방향 물리적 신호)
-  - Log transform 후: 3.53x (값이 <<1이라 log≈linear, 효과 없음)
-  - Per-axis z-score 후: **1.000x** ✅ — normalized_target에서 Y/X/Z 분산 균등
-- **결론: loss function과 normalizer는 Y-bias의 원인이 아님**
-
-**Y-bias의 구조적 원인:**
-- 중력(-Y)으로 인해 입자가 수직 적층 → PP 엣지의 `a` 벡터가 Y 방향으로 편중
-- `f_ij = s1·a + s2·b + s3·c`에서 `s1*a`가 주로 Y 방향 기여
-- 모델이 s1(a축) 학습을 통한 Y force에 먼저 수렴 → b, c축(X/Z) 활성화 지연
-- 더 많은 학습이 필요한 구조적 특성이지 버그가 아닐 가능성
-
-### 현재 코드 상태 (graph_model.py)
-- Loss: relative RMSE (Classic GNN 동일 방식)
-- 디버그 로깅 추가: train 시 매 10,000 decoder 호출마다 output/PP f_ij/PM f_ij 축별 mean, std 출력
-
-### 다음 조사 방향 (미결)
-- 서버 로그에서 `[DEBUG step=N]` 출력으로 f_ij 축별 분포 추적
-- PP/PM f_ij에서 Y-axis std가 X/Z 대비 몇 배인지 확인 → 아키텍처 귀책 여부 판단
-- 옵션 A: plain MSE + 300k+ step 장기 학습
-- 옵션 B: per-axis loss weight (`w_X:w_Y:w_Z = k:1:k`, k>1)로 X/Z gradient 증폭
+**미결:** 서버 로그 `[DEBUG]` 출력으로 node_residual Y-bias 보정 효과 확인 후 방향 결정.
 
 ---
 
@@ -236,4 +214,4 @@ These differences from the DYNAMI-CAL GRAPHNET paper affect performance but do N
 1. ~~**b'_ij construction**: Paper uses velocity + angular_velocity~~ → **#6에서 velocity 기반으로 수정 완료**
 2. **Spatiotemporal message passing**: Paper updates position/velocity via Euler integration at each MP step; current code only updates latent space
 3. **Boundary handling**: Paper uses ghost node reflection (mesh-free); current code uses mesh triangulation + closest point projection
-4. **Node-level decoding**: Paper decodes inverse mass/inertia from node embeddings; current code decodes acceleration directly from edge forces
+4. **Node-level decoding**: Paper decodes inverse mass/inertia from node embeddings; current code uses Edge Force Decoder + External Force Decoder (node_decoder, commit `b1dcd03`)
