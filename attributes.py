@@ -10,7 +10,7 @@ def attribute(device):
     message_passing_steps = 10
 
     monitor_interval = 10000
-    test_interval = 25000
+    test_interval = 10000
     test_length = 293
     test_sequence_idx = 5
     
@@ -32,7 +32,7 @@ def attribute(device):
 
     lr = 1e-4
     decay_offset = 1e-1 # expointential decay from lr to lr*decay_offset
-    secondary_decay_offset = 1e-2 # linear decay from lr*decay_offset to lr*secondary_decay_offset
+    secondary_decay_offset = 1e-1 # linear decay from lr*decay_offset to lr*secondary_decay_offset
     lr_decay_length = 8e5
     norm_acc_length = 1e6
     grad_limit = 3.0 # normalizing gradients if limit is exceeded
@@ -67,7 +67,7 @@ def attribute(device):
     #decoder_pack = NetworkParamterPack('decoder', 3, latent_size, latent_size, 3, False, 1, True, False, device)
     edge_decoder_pp_pack = NetworkParamterPack('edge_decoder_pp', 3, latent_size, latent_size, 3, False, 1, True, False, device)
     edge_decoder_pm_pack = NetworkParamterPack('edge_decoder_pm', 3, latent_size, latent_size, 3, False, 1, True, False, device)
-    node_decoder_pack    = NetworkParamterPack('node_decoder',    3, latent_size, latent_size, 3, False, 1, True, False, device)
+    ext_force_decoder_pack = NetworkParamterPack('ext_force_decoder', 3, latent_size, latent_size, 3, False, 1, True, False, device)
 
     NetworkAttributesPack = namedtuple('networkattributespack', ['edge_encoder',
                                                                  'node_encoder',
@@ -76,7 +76,7 @@ def attribute(device):
                                                                  'node_messenger',
                                                                  'edge_decoder_pp',
                                                                  'edge_decoder_pm',
-                                                                 'node_decoder'])
+                                                                 'ext_force_decoder'])
 
     networkattributespack = NetworkAttributesPack(edge_encoder_pack,
                                                   node_encoder_pack,
@@ -85,7 +85,7 @@ def attribute(device):
                                                   node_messenger_pack,
                                                   edge_decoder_pp_pack,
                                                   edge_decoder_pm_pack,
-                                                  node_decoder_pack)
+                                                  ext_force_decoder_pack)
 
     return networkattributespack, trainingattributespack
 

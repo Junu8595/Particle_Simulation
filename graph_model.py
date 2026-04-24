@@ -26,7 +26,11 @@ class Graph():
         self.decode = self.decoder
 
         self._debug_step_count = 0  # decoder 축별 디버그 로깅용 카운터
+        self._log_path = None
 
+
+    def set_log_path(self, path):
+        self._log_path = path
 
     def _move_datapack_to_device(self, datapack, device):
         """datapack 내부의 모든 텐서를 지정된 device로 이동"""
@@ -151,28 +155,41 @@ class Graph():
         edge_output = torch.zeros((num_nodes, 3), device=self.device, dtype=f_ij.dtype)
         edge_output = torch_scatter.scatter_add(f_ij, self.receivers, dim=0, out=edge_output)
 
-        # 4b. Node-level residual decoder
-        node_residual = self.graph_net(self.graph_net.sub_nets.node_decoder, self.latent_node)
-        output = edge_output + node_residual
+        # 4b. Phase gating: 처음 100k step은 edge_output만, 이후 ext_force 활성화
+        if self._debug_step_count < 100000:
+            output = edge_output
+            node_residual = None
+        else:
+            node_residual = self.graph_net(self.graph_net.sub_nets.ext_force_decoder, self.latent_node)
+            output = edge_output + 0.1 * node_residual
 
         if grid_flag:
             return output
 
-        # 5. 축별 디버그 로깅 (train 시에만, 매 10000 decoder 호출마다)
+        # 5. 축별 디버그 로깅 (train 시에만, 매 10000 decoder 호출마다, log 파일에 기록)
         if train_flag:
             self._debug_step_count += 1
             if self._debug_step_count % 10000 == 0:
                 with torch.no_grad():
+                    lines = []
                     def _log_axis(t, label):
-                        print(f"[DEBUG step={self._debug_step_count}] {label}: "
-                              f"mean=({t[:,0].mean():.5f}, {t[:,1].mean():.5f}, {t[:,2].mean():.5f})  "
-                              f"std=({t[:,0].std():.5f}, {t[:,1].std():.5f}, {t[:,2].std():.5f})")
+                        lines.append(
+                            f"[DEBUG step={self._debug_step_count}] {label}: "
+                            f"mean=({t[:,0].mean():.5f}, {t[:,1].mean():.5f}, {t[:,2].mean():.5f})  "
+                            f"std=({t[:,0].std():.5f}, {t[:,1].std():.5f}, {t[:,2].std():.5f})\n"
+                        )
                     _log_axis(output[self.next_particle_indices], "output[particles] (X,Y,Z)")
-                    _log_axis(node_residual[self.next_particle_indices], "node_residual[particles] (X,Y,Z)")
                     if pw_mask.any():
                         _log_axis(f_ij[pw_mask], "PP f_ij (X,Y,Z)")
                     if pm_mask.any():
                         _log_axis(f_ij[pm_mask], "PM f_ij (X,Y,Z)")
+                    if node_residual is not None:
+                        _log_axis(node_residual[self.next_particle_indices], "node_residual[particles] (X,Y,Z)")
+                    text = ''.join(lines)
+                    print(text, end='')
+                    if self._log_path:
+                        with open(self._log_path, 'a') as f:
+                            f.write(text)
 
         # 6. Loss 계산 (Classic GNN 방식 — relative RMSE)
         error = targetpack.normalized_target - output
