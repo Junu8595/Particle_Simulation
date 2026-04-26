@@ -24,3 +24,7 @@ __pycache__/
 # 비밀번호 포함 — git 제외
 sync_data.sh
 sync_server.py
+
+# Claude Code 내부 파일
+.claude/agents/
+.claude/scheduled_tasks.lock

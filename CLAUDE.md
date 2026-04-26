@@ -197,13 +197,141 @@ python preprocess_data.py
 
 **현재 코드:** relative RMSE + 매 10k step `[DEBUG]` 로깅 (output/node_residual/f_ij 축별 stats)
 
-**미결:** 서버 로그 `[DEBUG]` 출력으로 node_residual Y-bias 보정 효과 확인 후 방향 결정.
+**결론:** node_decoder 추가 자체는 유효한 방향이나, edge decoder 축퇴(degeneration) 문제가 새로운 이슈로 부상 → Issue #8 참조.
+
+---
+
+## 🔄 Issue #8 — Edge Decoder 축퇴 (비교실험 진행 중, 2026-04-20~)
+
+### 문제 정의
+
+antisymmetric edge decoder(`f_ij = s1·a + s2·b + s3·c`)와 external force node decoder를 혼합 운용할 때, **edge decoder가 학습을 포기하고 node decoder에 수렴을 위임하는 축퇴 현상** 발생.
+
+- 증상: 40k step 이후 Abs Loss ≈ 0.034~0.041에서 plateau, `[DEBUG]` edge f_ij std ≈ 0.001 (node_residual std ≈ 0.05 대비 50배 작음)
+- 원인 가설: node decoder의 gradient magnitude가 edge decoder보다 커서 optimizer가 node decoder를 주학습 경로로 선택
+
+### 비교실험 설계
+
+**기준 실험 (Issue #7 말기):** batch=4, relative RMSE, edge+node decoder, 260k step → stagnation
+
+**조정 대상 하이퍼파라미터:**
+
+| 변수 | 설명 | 예상 효과 |
+|------|------|-----------|
+| `batch_size` | 배치 크기 축소 (4→1) | gradient noise 증가 → 지역 최솟값 탈출 가능성 |
+| LR decay rate / 하한 | decay 저감으로 후반 lr 유지 | 장기 학습 시 gradient 소실 방지 |
+| Phase step | edge-only 학습 후 node decoder 개입 타이밍 | edge decoder가 먼저 수렴한 뒤 node가 잔차 보정 |
+
+### 실험 목록
+
+| 실험 | 구조 | batch | loss | 비고 |
+|------|------|-------|------|------|
+| A (기준) | edge-only | 1 | rel RMSE | 260k 실험과 동일 구조, batch만 1로 변경. 100k step 후 비교 |
+| B | edge-only | 1 | rel RMSE | LR decay 조정 |
+| C | edge + node (phase) | 1 | rel RMSE | phase step 조정 |
+
+### 현재 코드 상태 (2026-04-20)
+
+- `batch_size = 1`, edge-only decoder (node_decoder 아키텍처에서 제거)
+- `output = edge_output` (node_residual 없음)
+- `[DEBUG]` 로그 → log 파일 기록 (`set_log_path` 유지)
+
+### 실험 결과 (2026-04-20~21)
+
+| 실험 | 설명 | 100k Abs Loss (최저) | output Y/X @ 100k |
+|------|------|------|------|
+| Exp A | edge-only, batch=1, secondary_decay=1e-2 | 0.0338 @ 90k | 17% |
+| Exp B | edge-only, batch=1, secondary_decay=1e-1 | 0.0340 @ 90k | 16% |
+
+- Exp A와 Exp B 수렴 곡선이 100k 구간에서 사실상 동일 → `secondary_decay_offset` 효과는 LR이 Phase 2(800k step 이후)에 진입해야 나타남
+- output Y/X 15~18% 정체: loss/LR이 아닌 **PM frame 구조적 Y 결핍** 문제 → Issue #9 참조
+
+---
+
+## 🔄 Issue #9 — PM edge_a Y-결핍 (hopper geometry bias, 2026-04-21)
+
+### 문제 정의
+
+output Y/X 비율이 15~18%로 학습 내내 개선되지 않는 근본 원인 규명.
+`baked_training_data/step_0.pt` 분석 결과, **PM edge local frame의 구조적 Y 결핍** 확인.
+
+### 데이터 근거 (`step_0.pt` 기준)
+
+| | PP (144,149개) | PM (15,984개) |
+|---|---|---|
+| edge_a \|Y\| / \|X\| | **1.04** ✅ | **0.61** ⚠️ |
+| edge_b \|Y\| / \|X\| | 0.99 ✅ | 0.93 ✅ |
+| edge_c \|Y\| / \|X\| | 0.98 ✅ | 1.46 |
+
+- **PP**: a/b/c 모두 X/Y/Z 균등 분포 → PP f_ij Y/X 학습 중 87~102% 유지 (정상)
+- **PM edge_a**: Y 성분이 X의 61%에 불과 → `s1·a` (PM 주력 decoder 성분)가 Y force를 구조적으로 과소 표현
+
+### 원인 분석
+
+PM `edge_a` = 메시 삼각면의 면 법선(face normal). Hopper 형상 특성상:
+- 수직 측벽(Z축 방향 법선) 비중이 높음 → `edge_a`의 Z 성분 과잉(|Z|=0.649, |Y|=0.256)
+- `edge_c = a × b` 크로스곱 결과로 Y 과잉(1.46)이 나타나지만, decoder 기여도는 `s1·a` 위주
+- PM f_ij Y/X가 학습 100k 내내 33~48%로 정체되는 이유
+
+### 영향
+
+- output 전체 Y/X = 15~18% 고착 (PP는 87~102%로 정상 → PM이 bottleneck)
+- PM edges가 전체의 ~10%(15,984 / 160,133)이지만 boundary force를 담당 → rollout Y-divergence의 직접 원인 가능성
+
+### 대응 방안 (미결)
+
+1. **PM decoder 가중치 조정**: PM f_ij에서 `s3·c` 기여를 높이는 방향 (c는 Y 과잉으로 보완 가능)
+2. **PM별 좌표계 재설계**: face normal 대신 particle-wall 상대벡터 기반으로 `edge_a` 재정의
+3. **Y-weighted loss**: PM edges에 대해 Y축 loss 가중치 상향
+
+---
+
+## 🔄 Issue #10 — Gravity 제거 전처리 (2026-04-24)
+
+### 문제 정의
+
+target_acc의 Y축 전체 평균이 `-0.01150469`로, 중력 상수가 학습 타겟에 상수 bias로 포함되어 있음.
+→ normalizer가 Y축 std를 **3.151**로 과대 추정 (X=0.039, Z=0.120 대비 80배) → normalized space에서 Y 신호 17배 축소 → Y 학습 불리.
+
+### 근거
+
+- target_normalizer Y std = **3.151** (X=0.039, Z=0.120)
+- step_0 normalize 후 Y std = 0.0016 (X std = 0.028의 1/17)
+- input 0.01 → reverse_output Y = **0.031** (X = 0.0004의 79배 증폭) → rollout 발산 직접 원인
+
+### 수정 내용
+
+| 파일 | 변경 |
+|------|------|
+| `attributes.py` | `gravity_y = -0.01150469` 상수 추가, `DataParameterPack`에 포함 |
+| `dataset.py` `__init__` | `self.gravity_y` 저장 |
+| `dataset.py` bake_mode | particle rows에서 `gravity_y` 제거 후 `.pt` 저장 |
+| `dataset.py` `reverse_output` | `acc_prediction[:, 1] += self.gravity_y` (중력 복원) |
+
+### gravity 추정 방법
+
+전체 6176개 `.pt` 파일의 particle node `target_acc` Y축 mean:
+```
+gravity_y = mean(target_acc_particle[:, 1]) = -0.01150469
+총 샘플: 11,158,631 particle-steps
+X mean = -0.0000029 ≈ 0  ✅
+Z mean = +0.0000005 ≈ 0  ✅
+```
+
+### 다음 단계
+
+**re-bake 필요**: 기존 6176개 `.pt`는 gravity 포함 상태.
+```bash
+python preprocess_data.py
+```
+re-bake 완료 후 `target_normalizer` Y std가 X/Z와 유사한 수준으로 감소하는지 확인.
 
 ---
 
 ## 🟡 Active Issues
 
-없음 (Issue #7 조사 중, 위 참조).
+Issue #9 PM frame Y-결핍 — 대응 방안 검토 중.
+Issue #10 Gravity 제거 전처리 — re-bake 대기 중.
 
 ---
 

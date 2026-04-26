@@ -39,12 +39,13 @@ def main():
 
     # 5. 데이터 굽기 시작! (KDTree, 기저벡터 계산 등 무거운 연산을 여기서 다 끝냄)
     for i in range(dataset_length):
-        # get_data 내부에서 복잡한 연산 후 DataPack 반환 (모두 CPU 텐서 상태)
+        out_path = os.path.join(save_dir, f'step_{i}.pt')
+        if os.path.isfile(out_path):
+            if i % 100 == 0:
+                print(f"Skip {i}/{dataset_length} (already exists)")
+            continue
         data_pack = data_set.get_data(i, data_parameters_pack.contact_distance, rotate_flag=False)
-        
-        # 파일로 저장
-        torch.save(data_pack, os.path.join(save_dir, f'step_{i}.pt'))
-        
+        torch.save(data_pack, out_path)
         if i % 100 == 0:
             print(f"Baked {i}/{dataset_length}...")
 

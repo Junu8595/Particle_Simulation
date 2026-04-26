@@ -34,12 +34,12 @@ torch.backends.cudnn.deterministic = False
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-train_flag = False
+train_flag = True
 one_step_flag = False
-roll_out_flag = True   # True로 하고 test
+roll_out_flag = False   # True로 하고 test
 rotate_flag = False
-fresh_start = False         # False로 하고 test
-plot_flag = True
+fresh_start = True         # False로 하고 test
+plot_flag = False
 
 def mem(tag=""):
     if torch.cuda.is_available():
@@ -86,7 +86,7 @@ time = utils.get_time()
 load_path = './load_network/'
 test_network_path = r'C:/Users/AISDL_PJW/Projects/Particle_Simulation/saves_2026_04_18_12_30_09/'
 saving_path = './saves_' + time + '/'
-test_result_path = './_test_result_2026_04_18_12_30_09/'
+test_result_path = './test_result_' + time + '/'
 
 def get_balanced_overlapping_grids(particle_pos, indices, max_particles, min_particles, overlap_ratio=0.2, particle_mask = None):
 
@@ -313,7 +313,7 @@ def collate_fn(batch):
 
 def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
 
-    batch_size = 4
+    batch_size = 1
     num_workers = 8  # 데이터 로딩/전처리를 비동기로 수행
     
     steps_per_epoch = data_set.__len__() // batch_size
@@ -359,9 +359,11 @@ def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
                     m.weight[:,19:] *= alpha
                 break
 
+    graph.set_log_path(saving_path + 'log_' + time + '.txt')
+
     t0 = datetime.now()
     loss_list = []
-    
+
     train_loader = DataLoader(
         data_set,
         batch_size=batch_size,

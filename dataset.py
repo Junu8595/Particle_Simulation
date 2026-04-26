@@ -85,6 +85,7 @@ class gns_dataset(Dataset):
         self.num_history = dataset_properties_packs.num_history
         self.lower = dataset_properties_packs.num_history
         self.upper = -2
+        self.gravity_y = dataset_properties_packs.gravity_y
 
         self.bake_mode = False  # True일 때: normalizer/log-transform 생략, raw feature 저장
 
@@ -356,8 +357,10 @@ class gns_dataset(Dataset):
             normalized_target_sign = torch.where(normalized_target >= 0.0, 1, -1)
             normalized_target = torch.log(normalized_target.abs() + 1) * normalized_target_sign
         else:
-            # bake_mode: raw target_acc 그대로 저장 (normalization/log-transform 생략)
-            normalized_target = target_acc.detach().to('cpu').clone()
+            # bake_mode: gravity(Y축 상수) 제거 후 저장. reverse_output에서 복원.
+            gravity_corrected = target_acc.clone()
+            gravity_corrected[:particle_indices.shape[0], 1] -= self.gravity_y
+            normalized_target = gravity_corrected.detach().to('cpu').clone()
 
         # =========================================================
         # Edge local frame for particle-particle edges only
@@ -407,19 +410,18 @@ class gns_dataset(Dataset):
         # mesh face normal을 이용해 직교 프레임을 구성한다.
         num_contact_edges = num_total_edges - num_pairwise_edges
         if num_contact_edges > 0:
-            # a: 입자에서 접촉점 방향
-            contact_rel_pos = pos[senders[num_pairwise_edges:]] - pos[receivers[num_pairwise_edges:]]
-            contact_a = graph_builder.safe_normalize(contact_rel_pos)
-
-            # b: face normal에서 a 성분 제거 (Gram-Schmidt)
+            # a: face normal 방향 (Issue #9: 이전 particle→contact 방향 대비 Y coverage 개선)
             contact_normal = mesh_norm[:, :3]  # build_boundary_edge가 반환한 face normal
-            a_dot_n = torch.sum(contact_normal * contact_a, dim=1, keepdim=True)
-            normal_perp = contact_normal - a_dot_n * contact_a
-            contact_b = graph_builder.safe_normalize(normal_perp)
+            contact_a = graph_builder.safe_normalize(contact_normal)
 
-            # degenerate: |normal_perp| < 1e-4 이면 GS가 수치적으로 불안정
-            # (face normal이 contact_a와 거의 평행할 때 float32 오차로 방향이 왜곡됨)
-            b_degen = torch.norm(normal_perp, dim=1) < 1e-4
+            # b: 상대위치에서 a 성분 제거 (Gram-Schmidt)
+            contact_rel_pos = pos[senders[num_pairwise_edges:]] - pos[receivers[num_pairwise_edges:]]
+            a_dot_r = torch.sum(contact_rel_pos * contact_a, dim=1, keepdim=True)
+            rel_pos_perp = contact_rel_pos - a_dot_r * contact_a
+            contact_b = graph_builder.safe_normalize(rel_pos_perp)
+
+            # degenerate: |rel_pos_perp| < 1e-4 이면 상대위치가 법선과 거의 평행
+            b_degen = torch.norm(rel_pos_perp, dim=1) < 1e-4
             if b_degen.any():
                 contact_b[b_degen] = graph_builder.build_fallback_b_from_a(contact_a[b_degen])
 
@@ -589,11 +591,12 @@ class gns_dataset(Dataset):
             return self.graph_data(contact_distance, raw_data, False)
         
     def reverse_output(self, output, updated_pos, updated_vel):
-        output = output.to('cpu')        
+        output = output.to('cpu')
         output_sign = torch.where(output >= 0.0, 1, -1)
         output = torch.clamp(output.abs(), max=10.0)
         output = (torch.pow(np.e * torch.ones(output.shape, device='cpu'), output) - 1) * output_sign
         acc_prediction = self.target_normalizer.inverse(output)
+        acc_prediction[:, 1] += self.gravity_y  # bake 시 제거한 Y축 중력 상수 복원
         
         updated_pos = updated_pos.to('cpu')
         updated_vel = updated_vel.to('cpu')
@@ -740,7 +743,7 @@ class gns_dataset(Dataset):
             node_features = self.node_normalizer(data_pack.nodepack.node_features, accumulate=True)
             edge_features = self.edge_normalizer(data_pack.edgepack.edge_features, accumulate=True)
 
-            # targetpack.normalized_target에는 raw target_acc가 저장되어 있음 (bake_mode=True로 구운 경우)
+            # targetpack.normalized_target에는 gravity-subtracted target_acc가 저장되어 있음 (bake_mode=True로 구운 경우)
             raw_target = data_pack.targetpack.normalized_target
             particle_idx = data_pack.nodepack.particle_indices
             # particle 노드만으로 통계 누적, 전체 노드에 적용
