@@ -94,6 +94,7 @@ class Graph():
 
     def encoder(self, datapack):
         self.next_particle_indices = datapack.nodepack.next_particle_indices
+        self.valid_particle_indices = datapack.nodepack.valid_particle_indices
         self.receivers = datapack.edgepack.receivers
         self.senders = datapack.edgepack.senders
 
@@ -155,13 +156,11 @@ class Graph():
         edge_output = torch.zeros((num_nodes, 3), device=self.device, dtype=f_ij.dtype)
         edge_output = torch_scatter.scatter_add(f_ij, self.receivers, dim=0, out=edge_output)
 
-        # 4b. Phase gating: 처음 100k step은 edge_output만, 이후 ext_force 활성화
-        if self._debug_step_count < 100000:
-            output = edge_output
-            node_residual = None
-        else:
-            node_residual = self.graph_net(self.graph_net.sub_nets.ext_force_decoder, self.latent_node)
-            output = edge_output + 0.1 * node_residual
+        # 4b. Exp D: phase gating 제거 — edge + node 동시 학습
+        node_residual = self.graph_net(
+            self.graph_net.sub_nets.ext_force_decoder, self.latent_node
+        )
+        output = edge_output + node_residual
 
         if grid_flag:
             return output
@@ -178,27 +177,45 @@ class Graph():
                             f"mean=({t[:,0].mean():.5f}, {t[:,1].mean():.5f}, {t[:,2].mean():.5f})  "
                             f"std=({t[:,0].std():.5f}, {t[:,1].std():.5f}, {t[:,2].std():.5f})\n"
                         )
-                    _log_axis(output[self.next_particle_indices], "output[particles] (X,Y,Z)")
+                    _log_axis(output[self.valid_particle_indices], "output[particles] (X,Y,Z)")
                     if pw_mask.any():
                         _log_axis(f_ij[pw_mask], "PP f_ij (X,Y,Z)")
                     if pm_mask.any():
                         _log_axis(f_ij[pm_mask], "PM f_ij (X,Y,Z)")
-                    if node_residual is not None:
-                        _log_axis(node_residual[self.next_particle_indices], "node_residual[particles] (X,Y,Z)")
+                    _log_axis(node_residual[self.valid_particle_indices], "node_residual[particles] (X,Y,Z)")
+                    # edge vs node 기여 비율
+                    edge_norm = edge_output[self.valid_particle_indices].norm(dim=1).mean()
+                    node_norm = node_residual[self.valid_particle_indices].norm(dim=1).mean()
+                    ratio = node_norm / (edge_norm + 1e-8)
+                    lines.append(
+                        f"[DEBUG step={self._debug_step_count}] "
+                        f"edge_output norm={edge_norm:.5f}, "
+                        f"node_residual norm={node_norm:.5f}, "
+                        f"node/edge ratio={ratio:.4f}\n"
+                    )
                     text = ''.join(lines)
                     print(text, end='')
                     if self._log_path:
                         with open(self._log_path, 'a') as f:
                             f.write(text)
 
-        # 6. Loss 계산 (Classic GNN 방식 — relative RMSE)
+        # 6. Loss 계산
+        # valid_particle_indices: 현재 존재하고 다음 step에도 존재하는 입자만 (domain-exit 제외)
         error = targetpack.normalized_target - output
 
-        self.loss = torch.pow(error[self.next_particle_indices], 2).sum(dim=1).mean()
-        self.sum = torch.pow(targetpack.normalized_target[self.next_particle_indices], 2).sum(dim=1).mean()
-        self.loss = torch.sqrt(self.loss) / self.sum
+        # 메인 loss: relative RMSE
+        loss_combined = torch.pow(error[self.valid_particle_indices], 2).sum(dim=1).mean()
+        self.sum = torch.pow(targetpack.normalized_target[self.valid_particle_indices], 2).sum(dim=1).mean()
+        loss_main = torch.sqrt(loss_combined) / self.sum
 
-        loss_average = [self.loss.item(), error[self.next_particle_indices].abs().mean().item()]
+        # node_residual penalty: node_decoder 독점 억제, edge_decoder gradient 공간 확보
+        NODE_PENALTY_WEIGHT = 0.1
+        node_penalty = torch.pow(
+            node_residual[self.valid_particle_indices], 2
+        ).sum(dim=1).mean()
+        self.loss = loss_main + NODE_PENALTY_WEIGHT * node_penalty
+
+        loss_average = [self.loss.item(), error[self.valid_particle_indices].abs().mean().item()]
 
         return output, loss_average
 

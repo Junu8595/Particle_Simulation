@@ -219,7 +219,7 @@ def gns_collate_fn(batch):
     all_pairwise_masks, all_reverse_idx = [], []
     all_edge_a, all_edge_b, all_edge_c = [], [], []
     all_b_deg, all_c_deg = [], []
-    all_particle_indices, all_next_particle_indices = [], []
+    all_particle_indices, all_next_particle_indices, all_valid_particle_indices = [], [], []
 
     node_offset = 0
     edge_offset = 0  # 👈 reverse_edge_idx를 위한 엣지 오프셋!
@@ -234,6 +234,7 @@ def gns_collate_fn(batch):
         # particle_indices 오프셋 적용
         all_particle_indices.append(d.nodepack.particle_indices + node_offset)
         all_next_particle_indices.append(d.nodepack.next_particle_indices + node_offset)
+        all_valid_particle_indices.append(d.nodepack.valid_particle_indices + node_offset)
 
         # 그냥 합치면 되는 텐서들
         all_edge_features.append(ep.edge_features)
@@ -274,10 +275,12 @@ def gns_collate_fn(batch):
     # 4. 완벽하게 조립된 DataPack 생성
     particle_indices = torch.cat(all_particle_indices, dim=0)
     next_particle_indices = torch.cat(all_next_particle_indices, dim=0)
+    valid_particle_indices = torch.cat(all_valid_particle_indices, dim=0)
     new_nodepack = NodePack(
         node_features=node_features,
         particle_indices=particle_indices,
         next_particle_indices=next_particle_indices,
+        valid_particle_indices=valid_particle_indices,
         hopper_indices=None,
         roller1_indices=None,
         roller2_indices=None,

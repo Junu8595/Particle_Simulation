@@ -42,8 +42,9 @@ class RawDataPack:
             setattr(self, field, data.to(device))
 
 NodePack = namedtuple(
-    'NodePack', 
+    'NodePack',
     ['node_features', 'particle_indices', 'next_particle_indices',
+     'valid_particle_indices',
      'hopper_indices', 'roller1_indices', 'roller2_indices']
 )
 
@@ -235,6 +236,8 @@ class gns_dataset(Dataset):
 
         particle_indices = particle_id.nonzero(as_tuple=False).reshape(-1)
         next_particle_indices = next_particle_id.nonzero(as_tuple=False).reshape(-1)
+        # particles exiting at t+1 have pos reset to (0,0,0) → spurious target_acc
+        valid_particle_indices = particle_indices[next_particle_id[particle_indices] > 0]
 
         self.particle_indices = particle_indices
         self.next_particle_indices = next_particle_indices
@@ -352,7 +355,7 @@ class gns_dataset(Dataset):
         target_pos = next_pos.detach()
 
         if not self.bake_mode:
-            normalized_target = self.target_normalizer.forward(target_acc[:particle_indices.shape[0]].to('cpu'), accumulate=True)
+            normalized_target = self.target_normalizer.forward(target_acc[valid_particle_indices].to('cpu'), accumulate=True)
             normalized_target = self.target_normalizer.forward(target_acc.to('cpu'), accumulate=False).detach().to('cpu').clone()
             normalized_target_sign = torch.where(normalized_target >= 0.0, 1, -1)
             normalized_target = torch.log(normalized_target.abs() + 1) * normalized_target_sign
@@ -484,10 +487,11 @@ class gns_dataset(Dataset):
             node_features,
             particle_indices,
             next_particle_indices,
+            valid_particle_indices,
             hopper_indices,
             roller1_indices,
             roller2_indices
-         )
+        )
 
         
     
@@ -745,9 +749,9 @@ class gns_dataset(Dataset):
 
             # targetpack.normalized_target에는 gravity-subtracted target_acc가 저장되어 있음 (bake_mode=True로 구운 경우)
             raw_target = data_pack.targetpack.normalized_target
-            particle_idx = data_pack.nodepack.particle_indices
-            # particle 노드만으로 통계 누적, 전체 노드에 적용
-            _ = self.target_normalizer.forward(raw_target[:particle_idx.shape[0]], accumulate=True)
+            valid_particle_idx = data_pack.nodepack.valid_particle_indices
+            # domain-exit 입자(spurious acc) 제외하고 통계 누적
+            _ = self.target_normalizer.forward(raw_target[valid_particle_idx], accumulate=True)
             normalized_target = self.target_normalizer.forward(raw_target, accumulate=False).detach()
             nt_sign = torch.where(normalized_target >= 0.0, 1, -1)
             normalized_target = torch.log(normalized_target.abs() + 1) * nt_sign

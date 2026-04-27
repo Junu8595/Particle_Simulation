@@ -318,20 +318,106 @@ X mean = -0.0000029 ≈ 0  ✅
 Z mean = +0.0000005 ≈ 0  ✅
 ```
 
-### 다음 단계
+### 결과 (2026-04-26 완료)
 
-**re-bake 필요**: 기존 6176개 `.pt`는 gravity 포함 상태.
-```bash
-python preprocess_data.py
-```
-re-bake 완료 후 `target_normalizer` Y std가 X/Z와 유사한 수준으로 감소하는지 확인.
+re-bake 완료 (6176개, 2026-04-26 20:04~20:42). target_normalizer Y std 검증:
+
+| 축 | 이전 std | 이후 std | 변화 |
+|---|---|---|---|
+| X | 0.039 | 0.0075 | — |
+| Y | **3.151** | **0.0294** | **107배 감소** ✅ |
+| Z | 0.120 | 0.0097 | — |
+
+Y/X std 비율: 80.8× → 3.9× (잔류 비율은 호퍼 구조 원인 — Issue #9)
+
+---
+
+## ✅ Issue #11 — Domain-exit 입자 허수 target_acc 제거 (2026-04-26)
+
+### 문제 정의
+
+다음 timestep에서 도메인을 이탈하는 입자는 `pos[t+1] = (0,0,0)`으로 리셋.
+이 때 `acc = 0 - 2·pos[t] + pos[t-1]` → Y-acc ≈ ±38mm (허수값).
+→ Issue #10의 gravity 제거 후에도 target_normalizer Y std = 3.151의 **직접 원인**.
+
+### 수정 내용
+
+| 파일 | 변경 |
+|------|------|
+| `dataset.py` `NodePack` | `valid_particle_indices` 필드 추가 |
+| `dataset.py` `graph_data()` | `valid_particle_indices = particle_indices[next_particle_id[particle_indices] > 0]` 생성 |
+| `dataset.py` normalizer 누적 | `target_acc[valid_particle_indices]` 기준으로 통계 누적 (non-bake & `__getitem__` 모두) |
+| `graph_model.py` encoder | `self.valid_particle_indices` 저장 |
+| `graph_model.py` decoder loss | `next_particle_indices` → `valid_particle_indices` |
+| `graph_main.py` collate_fn | `valid_particle_indices` 오프셋 적용 및 NodePack 포함 |
+
+### 검증 결과 (`test_valid_particle_indices.py`)
+
+- step 100 기준: particle 1615개 → valid 1597개 (domain-exit **18개** 제외)
+- 이탈 입자 |Y-acc| mean=38.0mm vs 유효 입자 0.02mm (**1754배 차이**)
+- re-bake 후 raw/baked 카운트 일치 ✅
+
+### 최종 target_normalizer 수렴값
+
+| 축 | mean | std |
+|---|---|---|
+| X | -0.000003 | 0.0075 |
+| **Y** | -0.002604 | **0.0294** (이전 3.151 → **107배 감소**) |
+| Z | 0.000000 | 0.0097 |
+
+---
+
+## 🔄 Issue #8 — Edge Decoder 축퇴 (Exp D 진행 중, 2026-04-27~)
+
+### 문제 정의
+
+antisymmetric edge decoder(`f_ij = s1·a + s2·b + s3·c`)와 external force node decoder를 혼합 운용할 때, **edge decoder가 학습을 포기하고 node decoder에 수렴을 위임하는 축퇴 현상** 발생.
+
+- 증상: 40k step 이후 Abs Loss ≈ 0.034~0.041에서 plateau, `[DEBUG]` edge f_ij std ≈ 0.001 (node_residual std ≈ 0.05 대비 50배 작음)
+- 원인 가설: node decoder의 gradient magnitude가 edge decoder보다 커서 optimizer가 node decoder를 주학습 경로로 선택
+
+### 비교실험 설계
+
+**기준 실험 (Issue #7 말기):** batch=4, relative RMSE, edge+node decoder, 260k step → stagnation
+
+**조정 대상 하이퍼파라미터:**
+
+| 변수 | 설명 | 예상 효과 |
+|------|------|-----------|
+| `batch_size` | 배치 크기 축소 (4→1) | gradient noise 증가 → 지역 최솟값 탈출 가능성 |
+| LR decay rate / 하한 | decay 저감으로 후반 lr 유지 | 장기 학습 시 gradient 소실 방지 |
+| Phase step | edge-only 학습 후 node decoder 개입 타이밍 | edge decoder가 먼저 수렴한 뒤 node가 잔차 보정 |
+| node_residual penalty | node_decoder 독점 억제용 L2 패널티 | edge decoder gradient 공간 확보 |
+
+### 실험 목록
+
+| 실험 | 구조 | batch | loss | 비고 |
+|------|------|-------|------|------|
+| A (기준) | edge-only | 1 | rel RMSE | 100k Abs Loss 0.0338 @ 90k, Y/X 17% |
+| B | edge-only | 1 | rel RMSE | LR decay 조정. 100k Abs Loss 0.0340 @ 90k, Y/X 16% |
+| C | edge + node (phase 100k) | 1 | rel RMSE | 33k step 진행 중 (Abs Loss ~0.28) |
+| **D** | **edge + node (동시)** | **1** | **rel RMSE + node penalty (λ=0.1)** | **2026-04-27 시작** |
+
+### Exp D 코드 상태 (2026-04-27)
+
+- phase gating 제거: `node_residual` 처음부터 활성화
+- `output = edge_output + node_residual` (0.1 스케일링 제거)
+- loss = `rel_RMSE + 0.1 × node_residual_L2`
+- DEBUG 로그: `node/edge ratio` 추가 (ratio ≫ 1이면 node 독점 → λ 상향 필요)
+- Issue #10+#11 수정 반영된 re-baked data 사용 (Y std=0.029)
+
+### Exp A/B 결론
+
+Exp A와 Exp B 수렴 곡선이 100k 구간에서 사실상 동일 → `secondary_decay_offset` 효과는 LR이 Phase 2(800k step 이후)에 진입해야 나타남.
+output Y/X 15~18% 정체: **Issue #11 수정 전 데이터** 사용 → Y std 과대 추정이 원인이었음.
+Exp D부터 Issue #10+#11 수정 re-baked data 적용.
 
 ---
 
 ## 🟡 Active Issues
 
+Issue #8 Exp D — edge+node 동시학습 + node_penalty, 2026-04-27 시작.
 Issue #9 PM frame Y-결핍 — 대응 방안 검토 중.
-Issue #10 Gravity 제거 전처리 — re-bake 대기 중.
 
 ---
 
