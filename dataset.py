@@ -351,6 +351,11 @@ class gns_dataset(Dataset):
         #     next_pos = graph_builder.rotate_pos(next_pos, z_rot_mat)
 
         target_acc = (next_vel - vel[:,-3:]).detach()
+        # gravity 명시적 분리: edge_decoder가 순수 contact force만 학습하도록
+        gravity_vec = torch.zeros(3, device=target_acc.device)
+        gravity_vec[1] = self.gravity_y
+        target_acc = target_acc - gravity_vec.unsqueeze(0)
+
         target_vel = next_vel.detach()
         target_pos = next_pos.detach()
 
@@ -360,10 +365,8 @@ class gns_dataset(Dataset):
             normalized_target_sign = torch.where(normalized_target >= 0.0, 1, -1)
             normalized_target = torch.log(normalized_target.abs() + 1) * normalized_target_sign
         else:
-            # bake_mode: gravity(Y축 상수) 제거 후 저장. reverse_output에서 복원.
-            gravity_corrected = target_acc.clone()
-            gravity_corrected[:particle_indices.shape[0], 1] -= self.gravity_y
-            normalized_target = gravity_corrected.detach().to('cpu').clone()
+            # bake_mode: gravity는 위에서 이미 제거됨. raw contact force 저장.
+            normalized_target = target_acc.detach().to('cpu').clone()
 
         # =========================================================
         # Edge local frame for particle-particle edges only
@@ -744,14 +747,26 @@ class gns_dataset(Dataset):
 
             # baked .pt 파일은 raw(비정규화) feature를 담고 있음.
             # 여기서 training normalizer를 적용하고 log-transform을 수행한다.
-            node_features = self.node_normalizer(data_pack.nodepack.node_features, accumulate=True)
-            edge_features = self.edge_normalizer(data_pack.edgepack.edge_features, accumulate=True)
+            # node_normalizer: particle 노드만 통계 누적, 전체 정규화
+            raw_node = data_pack.nodepack.node_features
+            particle_idx = data_pack.nodepack.particle_indices
+            contact_start = int(data_pack.nodepack.hopper_indices[0])
+            _ = self.node_normalizer(raw_node[particle_idx], accumulate=True)
+            _ = self.node_normalizer(raw_node[contact_start:], accumulate=True)
+            node_features = self.node_normalizer(raw_node, accumulate=False)
 
-            # targetpack.normalized_target에는 gravity-subtracted target_acc가 저장되어 있음 (bake_mode=True로 구운 경우)
+            # edge_normalizer: PP/PM 분리 누적, 전체 정규화
+            raw_edge = data_pack.edgepack.edge_features
+            pp_mask = data_pack.edgepack.pairwise_mask
+            pm_mask = ~pp_mask
+            _ = self.edge_normalizer(raw_edge[pp_mask], accumulate=True)
+            _ = self.edge_normalizer(raw_edge[pm_mask], accumulate=True)
+            edge_features = self.edge_normalizer(raw_edge, accumulate=False)
+
+            # target_normalizer: next_particle_indices 기준 통계 누적
             raw_target = data_pack.targetpack.normalized_target
-            valid_particle_idx = data_pack.nodepack.valid_particle_indices
-            # domain-exit 입자(spurious acc) 제외하고 통계 누적
-            _ = self.target_normalizer.forward(raw_target[valid_particle_idx], accumulate=True)
+            next_idx = data_pack.nodepack.next_particle_indices
+            _ = self.target_normalizer.forward(raw_target[next_idx], accumulate=True)
             normalized_target = self.target_normalizer.forward(raw_target, accumulate=False).detach()
             nt_sign = torch.where(normalized_target >= 0.0, 1, -1)
             normalized_target = torch.log(normalized_target.abs() + 1) * nt_sign
