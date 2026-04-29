@@ -85,7 +85,7 @@ python post_processing.py
 error         = target - output
 loss_main     = sqrt(MSE(error)) / sum(target²)       ← relative RMSE
 node_penalty  = MSE(node_residual)                    ← node 독점 억제 (L2)
-momentum_loss = MSE(sum(node_residual, dim=particles)) ← 운동량 편향 억제
+momentum_loss = MSE(mean(node_residual, dim=particles)) ← 운동량 편향 억제
 loss_total    = loss_main + 0.1 × node_penalty + 0.01 × momentum_loss
 ```
 
