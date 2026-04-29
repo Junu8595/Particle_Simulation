@@ -217,13 +217,7 @@ class Graph():
         ).sum(dim=1).mean()
 
         # 3) momentum_loss: node_residual 합산이 한 방향으로 치우치지 않도록
-        momentum_residual = torch_scatter.scatter_add(
-            node_residual[self.next_particle_indices],
-            torch.zeros(self.next_particle_indices.shape[0],
-                        dtype=torch.long, device=self.device),
-            dim=0,
-            out=torch.zeros((1, 3), device=self.device)
-        )
+        momentum_residual = node_residual[self.next_particle_indices].mean(dim=0)
         momentum_loss = torch.pow(momentum_residual, 2).mean()
 
         NODE_PENALTY_WEIGHT = 0.1
