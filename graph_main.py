@@ -316,7 +316,7 @@ def collate_fn(batch):
 
 def train_cycle(data_set : dataset.gns_dataset, test_set : dataset.gns_dataset):
 
-    batch_size = 1
+    batch_size = 4
     num_workers = 8  # 데이터 로딩/전처리를 비동기로 수행
     
     steps_per_epoch = data_set.__len__() // batch_size

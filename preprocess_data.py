@@ -37,7 +37,7 @@ def main():
     dataset_length = data_set.__len__()
     print(f"Total data to bake: {dataset_length}")
 
-    # 5. 데이터 굽기 시작! (KDTree, 기저벡터 계산 등 무거운 연산을 여기서 다 끝냄)
+    # 5. 데이터 굽기 시작 (기저벡터 계산 등 무거운 연산을 여기서 다 끝냄)
     for i in range(dataset_length):
         out_path = os.path.join(save_dir, f'step_{i}.pt')
         if os.path.isfile(out_path):

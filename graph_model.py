@@ -140,14 +140,14 @@ class Graph():
         # 2. 각각의 디코더에 통과시켜 3개의 스칼라 계수(s1, s2, s3) 추출
         if pw_mask.any():
             edge_scalars[pw_mask] = self.graph_net(self.graph_net.sub_nets.edge_decoder_pp, self.latent_edge[pw_mask])
-        
+
         if pm_mask.any():
             edge_scalars[pm_mask] = self.graph_net(self.graph_net.sub_nets.edge_decoder_pm, self.latent_edge[pm_mask])
 
         # 3. Vectorization: 스칼라 계수 * Edge Local Frame (a, b, c)
         # f_ij shape: (E, 3) - Global Frame에서의 3D 힘 벡터
-        f_ij = (edge_scalars[:, 0:1] * self.edge_a + 
-                edge_scalars[:, 1:2] * self.edge_b + 
+        f_ij = (edge_scalars[:, 0:1] * self.edge_a +
+                edge_scalars[:, 1:2] * self.edge_b +
                 edge_scalars[:, 2:3] * self.edge_c)
 
         # 4. Aggregation: 엣지 벡터들을 수신 노드(receivers) 기준으로 합산
@@ -155,7 +155,12 @@ class Graph():
         edge_output = torch.zeros((num_nodes, 3), device=self.device, dtype=f_ij.dtype)
         edge_output = torch_scatter.scatter_add(f_ij, self.receivers, dim=0, out=edge_output)
 
-        output = edge_output
+        # 5. External force decoder: 중력/외력 등 비접촉 가속도 보정
+        node_residual = self.graph_net(
+            self.graph_net.sub_nets.ext_force_decoder,
+            self.latent_node
+        )
+        output = edge_output + node_residual
 
         if grid_flag:
             return output
@@ -173,10 +178,26 @@ class Graph():
                         )
                     lines.append(f"[gravity separated] gravity_y subtracted from target_acc before normalizer\n")
                     _log_axis(output[self.next_particle_indices], "output[particles] (X,Y,Z)")
+                    _log_axis(node_residual[self.next_particle_indices], "node_residual[particles] (X,Y,Z)")
                     if pw_mask.any():
                         _log_axis(f_ij[pw_mask], "PP f_ij (X,Y,Z)")
                     if pm_mask.any():
                         _log_axis(f_ij[pm_mask], "PM f_ij (X,Y,Z)")
+                    edge_norm = edge_output[self.next_particle_indices].norm(dim=1).mean()
+                    node_norm = node_residual[self.next_particle_indices].norm(dim=1).mean()
+                    ratio = node_norm / (edge_norm + 1e-8)
+                    lines.append(
+                        f"[DEBUG step={self._debug_step_count}] "
+                        f"edge_output norm={edge_norm:.5f}, "
+                        f"node_residual norm={node_norm:.5f}, "
+                        f"node/edge ratio={ratio:.4f}\n"
+                    )
+                    momentum_vec = node_residual[self.next_particle_indices].sum(dim=0)
+                    lines.append(
+                        f"[DEBUG step={self._debug_step_count}] "
+                        f"momentum_residual (X,Y,Z): "
+                        f"({momentum_vec[0]:.5f}, {momentum_vec[1]:.5f}, {momentum_vec[2]:.5f})\n"
+                    )
                     text = ''.join(lines)
                     print(text, end='')
                     if self._log_path:
@@ -184,7 +205,31 @@ class Graph():
                             f.write(text)
 
         error = targetpack.normalized_target - output
-        self.loss = torch.pow(error[self.next_particle_indices], 2).sum(dim=1).mean()
+
+        # 1) 메인 loss: relative RMSE
+        loss_combined = torch.pow(error[self.next_particle_indices], 2).sum(dim=1).mean()
+        self.sum = torch.pow(targetpack.normalized_target[self.next_particle_indices], 2).sum(dim=1).mean()
+        loss_main = torch.sqrt(loss_combined) / self.sum
+
+        # 2) node_penalty: node_residual 크기 억제 (edge_decoder 공간 확보)
+        node_penalty = torch.pow(
+            node_residual[self.next_particle_indices], 2
+        ).sum(dim=1).mean()
+
+        # 3) momentum_loss: node_residual 합산이 한 방향으로 치우치지 않도록
+        momentum_residual = torch_scatter.scatter_add(
+            node_residual[self.next_particle_indices],
+            torch.zeros(self.next_particle_indices.shape[0],
+                        dtype=torch.long, device=self.device),
+            dim=0,
+            out=torch.zeros((1, 3), device=self.device)
+        )
+        momentum_loss = torch.pow(momentum_residual, 2).mean()
+
+        NODE_PENALTY_WEIGHT = 0.1
+        MOMENTUM_LOSS_WEIGHT = 0.01
+
+        self.loss = loss_main + NODE_PENALTY_WEIGHT * node_penalty + MOMENTUM_LOSS_WEIGHT * momentum_loss
 
         loss_average = [self.loss.item(), error[self.next_particle_indices].abs().mean().item()]
 
