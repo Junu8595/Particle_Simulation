@@ -192,7 +192,7 @@ class Graph():
                         f"node_residual norm={node_norm:.5f}, "
                         f"node/edge ratio={ratio:.4f}\n"
                     )
-                    momentum_vec = node_residual[self.next_particle_indices].sum(dim=0)
+                    momentum_vec = node_residual[self.next_particle_indices].mean(dim=0)
                     lines.append(
                         f"[DEBUG step={self._debug_step_count}] "
                         f"momentum_residual (X,Y,Z): "
