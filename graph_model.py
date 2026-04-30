@@ -144,6 +144,14 @@ class Graph():
         if pm_mask.any():
             edge_scalars[pm_mask] = self.graph_net(self.graph_net.sub_nets.edge_decoder_pm, self.latent_edge[pm_mask])
 
+        # 4) PM penetration penalty: s1 < 0 이면 인력 방향 → 물리적 비정상
+        if pm_mask.any():
+            pm_s1 = edge_scalars[pm_mask, 0]
+            penetration_penalty = torch.relu(-pm_s1).pow(2).mean()
+        else:
+            pm_s1 = None
+            penetration_penalty = torch.tensor(0.0, device=self.device)
+
         # 3. Vectorization: 스칼라 계수 * Edge Local Frame (a, b, c)
         # f_ij shape: (E, 3) - Global Frame에서의 3D 힘 벡터
         f_ij = (edge_scalars[:, 0:1] * self.edge_a +
@@ -165,6 +173,16 @@ class Graph():
         if grid_flag:
             return output
 
+        # PM contact 입자 mask (DEBUG + loss 공통 사용)
+        pm_particle_mask = torch.isin(
+            self.next_particle_indices,
+            self.receivers[pm_mask]
+        ) if pm_mask.any() else torch.zeros(
+            self.next_particle_indices.shape[0],
+            dtype=torch.bool, device=self.device
+        )
+        pp_particle_mask = ~pm_particle_mask
+
         if train_flag:
             self._debug_step_count += 1
             if self._debug_step_count % 10000 == 0:
@@ -176,7 +194,7 @@ class Graph():
                             f"mean=({t[:,0].mean():.5f}, {t[:,1].mean():.5f}, {t[:,2].mean():.5f})  "
                             f"std=({t[:,0].std():.5f}, {t[:,1].std():.5f}, {t[:,2].std():.5f})\n"
                         )
-                    lines.append(f"[gravity separated] gravity_y subtracted from target_acc before normalizer\n")
+                    lines.append(f"[gravity in target] gravity included in target_acc\n")
                     _log_axis(output[self.next_particle_indices], "output[particles] (X,Y,Z)")
                     _log_axis(node_residual[self.next_particle_indices], "node_residual[particles] (X,Y,Z)")
                     if pw_mask.any():
@@ -198,6 +216,28 @@ class Graph():
                         f"momentum_residual (X,Y,Z): "
                         f"({momentum_vec[0]:.5f}, {momentum_vec[1]:.5f}, {momentum_vec[2]:.5f})\n"
                     )
+                    if pm_s1 is not None:
+                        lines.append(
+                            f"[DEBUG step={self._debug_step_count}] "
+                            f"penetration_penalty={penetration_penalty.item():.5f}, "
+                            f"pm_s1_negative_ratio={((pm_s1 < 0).sum() / pm_s1.numel() * 100):.1f}%\n"
+                        )
+                    else:
+                        lines.append(
+                            f"[DEBUG step={self._debug_step_count}] penetration_penalty=0.0 (no PM edges)\n"
+                        )
+                    _err = targetpack.normalized_target - output
+                    _err_pm = _err[self.next_particle_indices[pm_particle_mask]]
+                    _err_pp = _err[self.next_particle_indices[pp_particle_mask]]
+                    _loss_pm = torch.pow(_err_pm, 2).sum(dim=1).mean() if pm_particle_mask.any() else torch.tensor(0.0)
+                    _loss_pp = torch.pow(_err_pp, 2).sum(dim=1).mean() if pp_particle_mask.any() else torch.tensor(0.0)
+                    lines.append(
+                        f"[DEBUG step={self._debug_step_count}] "
+                        f"pm_contact_particles={pm_particle_mask.sum().item()}, "
+                        f"pp_particles={pp_particle_mask.sum().item()}, "
+                        f"loss_pm={_loss_pm.item():.5f}, "
+                        f"loss_pp={_loss_pp.item():.5f}\n"
+                    )
                     text = ''.join(lines)
                     print(text, end='')
                     if self._log_path:
@@ -206,9 +246,24 @@ class Graph():
 
         error = targetpack.normalized_target - output
 
-        # 1) 메인 loss: relative RMSE
-        loss_combined = torch.pow(error[self.next_particle_indices], 2).sum(dim=1).mean()
-        self.sum = torch.pow(targetpack.normalized_target[self.next_particle_indices], 2).sum(dim=1).mean()
+        # 1) 메인 loss: PM contact 입자에 높은 가중치 적용
+        error_pm = error[self.next_particle_indices[pm_particle_mask]]
+        error_pp = error[self.next_particle_indices[pp_particle_mask]]
+
+        loss_pm = torch.pow(error_pm, 2).sum(dim=1).mean() \
+            if pm_particle_mask.any() \
+            else torch.tensor(0.0, device=self.device)
+
+        loss_pp = torch.pow(error_pp, 2).sum(dim=1).mean() \
+            if pp_particle_mask.any() \
+            else torch.tensor(0.0, device=self.device)
+
+        PM_LOSS_WEIGHT = 3.0
+        loss_combined = (PM_LOSS_WEIGHT * loss_pm + loss_pp) / (PM_LOSS_WEIGHT + 1.0)
+
+        self.sum = torch.pow(
+            targetpack.normalized_target[self.next_particle_indices], 2
+        ).sum(dim=1).mean()
         loss_main = torch.sqrt(loss_combined) / self.sum
 
         # 2) node_penalty: node_residual 크기 억제 (edge_decoder 공간 확보)
@@ -221,9 +276,13 @@ class Graph():
         momentum_loss = torch.pow(momentum_residual, 2).mean()
 
         NODE_PENALTY_WEIGHT = 0.1
-        MOMENTUM_LOSS_WEIGHT = 0.01
+        MOMENTUM_LOSS_WEIGHT = 0.001
+        PENETRATION_PENALTY_WEIGHT = 0.05
 
-        self.loss = loss_main + NODE_PENALTY_WEIGHT * node_penalty + MOMENTUM_LOSS_WEIGHT * momentum_loss
+        self.loss = (loss_main
+                     + NODE_PENALTY_WEIGHT * node_penalty
+                     + MOMENTUM_LOSS_WEIGHT * momentum_loss
+                     + PENETRATION_PENALTY_WEIGHT * penetration_penalty)
 
         loss_average = [self.loss.item(), error[self.next_particle_indices].abs().mean().item()]
 

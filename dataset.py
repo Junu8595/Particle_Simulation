@@ -351,10 +351,6 @@ class gns_dataset(Dataset):
         #     next_pos = graph_builder.rotate_pos(next_pos, z_rot_mat)
 
         target_acc = (next_vel - vel[:,-3:]).detach()
-        # gravity 명시적 분리: edge_decoder가 순수 contact force만 학습하도록
-        gravity_vec = torch.zeros(3, device=target_acc.device)
-        gravity_vec[1] = self.gravity_y
-        target_acc = target_acc - gravity_vec.unsqueeze(0)
 
         target_vel = next_vel.detach()
         target_pos = next_pos.detach()
@@ -365,7 +361,6 @@ class gns_dataset(Dataset):
             normalized_target_sign = torch.where(normalized_target >= 0.0, 1, -1)
             normalized_target = torch.log(normalized_target.abs() + 1) * normalized_target_sign
         else:
-            # bake_mode: gravity는 위에서 이미 제거됨. raw contact force 저장.
             normalized_target = target_acc.detach().to('cpu').clone()
 
         # =========================================================
@@ -603,7 +598,6 @@ class gns_dataset(Dataset):
         output = torch.clamp(output.abs(), max=10.0)
         output = (torch.pow(np.e * torch.ones(output.shape, device='cpu'), output) - 1) * output_sign
         acc_prediction = self.target_normalizer.inverse(output)
-        acc_prediction[:, 1] += self.gravity_y  # bake 시 제거한 Y축 중력 상수 복원
         
         updated_pos = updated_pos.to('cpu')
         updated_vel = updated_vel.to('cpu')

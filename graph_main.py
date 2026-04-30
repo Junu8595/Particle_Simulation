@@ -38,7 +38,7 @@ train_flag = True
 one_step_flag = False
 roll_out_flag = False   # True로 하고 test
 rotate_flag = False
-fresh_start = True         # False로 하고 test
+fresh_start = False         # False로 하고 test
 plot_flag = False
 
 def mem(tag=""):
@@ -84,7 +84,7 @@ contact_distance = data_parameters_pack.contact_distance
 
 time = utils.get_time()
 load_path = './load_network/'
-test_network_path = r'C:/Users/AISDL_PJW/Projects/Particle_Simulation/saves_2026_04_18_12_30_09/'
+test_network_path = '/home/ssdl/PJW/Particle_Simulation/saves_2026_04_29_11_47_28/'
 saving_path = './saves_' + time + '/'
 test_result_path = './test_result_' + time + '/'
 
