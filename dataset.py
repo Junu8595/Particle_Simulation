@@ -77,7 +77,8 @@ class gns_dataset(Dataset):
         self.test_folder = dataset_properties_packs.testing_path
         self.noise_level = dataset_properties_packs.training_noise
 
-        self.contact_distance = dataset_properties_packs.contact_distance
+        self.pp_contact_distance = dataset_properties_packs.pp_contact_distance
+        self.pm_contact_distance = dataset_properties_packs.pm_contact_distance
 
         self.node_normalizer = normalizer_packs[0]
         self.edge_normalizer = normalizer_packs[1]
@@ -150,11 +151,11 @@ class gns_dataset(Dataset):
 
         return np.array(idx_list)
     
-    def get_data(self, idx, contact_distance, rotate_flag):
+    def get_data(self, idx, pp_contact_distance, pm_contact_distance, rotate_flag):
         with torch.no_grad():
             raw_data = self.get_raw_data(idx)
             # ✅ GPU로 보내는 코드를 제거하고, CPU 상태로 graph_data를 만듭니다.
-            return self.graph_data(contact_distance, raw_data, rotate_flag)
+            return self.graph_data(pp_contact_distance, pm_contact_distance, raw_data, rotate_flag)
 
     def get_raw_data(self, idx):
 
@@ -214,7 +215,7 @@ class gns_dataset(Dataset):
         return RawDataPack(cells, prev_particle_pos, particle_pos, next_particle_pos, prev_mesh_pos, mesh_pos, next_mesh_pos, particle_vel, next_particle_vel,
                            mesh_vel, next_mesh_vel, acc, next_acc, mesh_node_type, particle_id, next_particle_id)
     
-    def graph_data(self, contact_distance, data, rotate_flag):
+    def graph_data(self, pp_contact_distance, pm_contact_distance, data, rotate_flag):
 
         self_edge = False
 
@@ -254,7 +255,7 @@ class gns_dataset(Dataset):
             _dev = self.device
             edge_index = radius_graph(
                 sub_particle_pos.to(_dev),
-                r=contact_distance,
+                r=pp_contact_distance,
                 batch=None,
                 loop=False,
                 max_num_neighbors=64
@@ -291,7 +292,7 @@ class gns_dataset(Dataset):
             # build_boundary_edge: GPU로 연산 후 CPU로 복귀
             mesh_receivers, contact_pos, contact_vel, contact_type, mesh_norm = graph_builder.build_boundary_edge(
                 cells[:,1:], particle_pos, mesh_pos, particle_indices, mesh_node_type, mesh_vel,
-                self.device, contact_distance)
+                self.device, pm_contact_distance)
             mesh_receivers = mesh_receivers.cpu()
             contact_pos    = contact_pos.cpu()
             contact_vel    = contact_vel.cpu()
@@ -587,10 +588,10 @@ class gns_dataset(Dataset):
         raw_data_pack = dc_replace(raw_data_pack, acc = updated_acc.clone().to('cpu'))
         return raw_data_pack
     
-    def update_data(self, raw_data, contact_distance):
+    def update_data(self, raw_data, pp_contact_distance, pm_contact_distance):
         with torch.no_grad():
             raw_data.todevice('cpu')
-            return self.graph_data(contact_distance, raw_data, False)
+            return self.graph_data(pp_contact_distance, pm_contact_distance, raw_data, False)
         
     def reverse_output(self, output, updated_pos, updated_vel):
         output = output.to('cpu')
@@ -723,11 +724,11 @@ class gns_dataset(Dataset):
 
         return RawDataPack(cells, prev_particle_pos, particle_pos, next_particle_pos, prev_mesh_pos, mesh_pos, next_mesh_pos, particle_vel, next_particle_vel, mesh_vel, next_mesh_vel, acc, next_acc, mesh_node_type, particle_id, next_particle_id), particle_idx
     
-    def build_tiled_raw_data(self, raw_data_pack, xbound, ybound, zbound, contact_distance):
-
-        xbound_pad = (xbound[0] - contact_distance, xbound[1] + contact_distance)
-        ybound_pad = (ybound[0] - contact_distance, ybound[1] + contact_distance)
-        zbound_pad = (zbound[0] - contact_distance, zbound[1] + contact_distance)
+    def build_tiled_raw_data(self, raw_data_pack, xbound, ybound, zbound, pp_contact_distance, pm_contact_distance):
+        pad = max(pp_contact_distance, pm_contact_distance)
+        xbound_pad = (xbound[0] - pad, xbound[1] + pad)
+        ybound_pad = (ybound[0] - pad, ybound[1] + pad)
+        zbound_pad = (zbound[0] - pad, zbound[1] + pad)
 
         particle_mask = self.box_mask_xyz(raw_data_pack.particle_pos, xbound, ybound, zbound_pad)
         mesh_mask = self.get_intersecting_mesh_mask(raw_data_pack, xbound_pad, ybound_pad, zbound_pad)
@@ -770,4 +771,4 @@ class gns_dataset(Dataset):
             new_tp = data_pack.targetpack._replace(normalized_target=normalized_target)
             return DataPack(new_np, new_ep, new_tp)
         else:
-            return self.get_data(idx, self.contact_distance, False)
+            return self.get_data(idx, self.pp_contact_distance, self.pm_contact_distance, False)

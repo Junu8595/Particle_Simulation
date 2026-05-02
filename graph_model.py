@@ -144,14 +144,6 @@ class Graph():
         if pm_mask.any():
             edge_scalars[pm_mask] = self.graph_net(self.graph_net.sub_nets.edge_decoder_pm, self.latent_edge[pm_mask])
 
-        # 4) PM penetration penalty: s1 < 0 이면 인력 방향 → 물리적 비정상
-        if pm_mask.any():
-            pm_s1 = edge_scalars[pm_mask, 0]
-            penetration_penalty = torch.relu(-pm_s1).pow(2).mean()
-        else:
-            pm_s1 = None
-            penetration_penalty = torch.tensor(0.0, device=self.device)
-
         # 3. Vectorization: 스칼라 계수 * Edge Local Frame (a, b, c)
         # f_ij shape: (E, 3) - Global Frame에서의 3D 힘 벡터
         f_ij = (edge_scalars[:, 0:1] * self.edge_a +
@@ -216,16 +208,6 @@ class Graph():
                         f"momentum_residual (X,Y,Z): "
                         f"({momentum_vec[0]:.5f}, {momentum_vec[1]:.5f}, {momentum_vec[2]:.5f})\n"
                     )
-                    if pm_s1 is not None:
-                        lines.append(
-                            f"[DEBUG step={self._debug_step_count}] "
-                            f"penetration_penalty={penetration_penalty.item():.5f}, "
-                            f"pm_s1_negative_ratio={((pm_s1 < 0).sum() / pm_s1.numel() * 100):.1f}%\n"
-                        )
-                    else:
-                        lines.append(
-                            f"[DEBUG step={self._debug_step_count}] penetration_penalty=0.0 (no PM edges)\n"
-                        )
                     _err = targetpack.normalized_target - output
                     _err_pm = _err[self.next_particle_indices[pm_particle_mask]]
                     _err_pp = _err[self.next_particle_indices[pp_particle_mask]]
@@ -258,7 +240,7 @@ class Graph():
             if pp_particle_mask.any() \
             else torch.tensor(0.0, device=self.device)
 
-        PM_LOSS_WEIGHT = 3.0
+        PM_LOSS_WEIGHT = 1.7
         loss_combined = (PM_LOSS_WEIGHT * loss_pm + loss_pp) / (PM_LOSS_WEIGHT + 1.0)
 
         self.sum = torch.pow(
@@ -275,14 +257,12 @@ class Graph():
         momentum_residual = node_residual[self.next_particle_indices].mean(dim=0)
         momentum_loss = torch.pow(momentum_residual, 2).mean()
 
-        NODE_PENALTY_WEIGHT = 0.1
-        MOMENTUM_LOSS_WEIGHT = 0.001
-        PENETRATION_PENALTY_WEIGHT = 0.05
+        NODE_PENALTY_WEIGHT = 0.3
+        MOMENTUM_LOSS_WEIGHT = 0.005
 
         self.loss = (loss_main
                      + NODE_PENALTY_WEIGHT * node_penalty
-                     + MOMENTUM_LOSS_WEIGHT * momentum_loss
-                     + PENETRATION_PENALTY_WEIGHT * penetration_penalty)
+                     + MOMENTUM_LOSS_WEIGHT * momentum_loss)
 
         loss_average = [self.loss.item(), error[self.next_particle_indices].abs().mean().item()]
 

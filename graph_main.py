@@ -38,7 +38,7 @@ train_flag = True
 one_step_flag = False
 roll_out_flag = False   # True로 하고 test
 rotate_flag = False
-fresh_start = False         # False로 하고 test
+fresh_start = True         # False로 하고 test
 plot_flag = False
 
 def mem(tag=""):
@@ -80,7 +80,8 @@ lr_decay_length = optimizer_parameters_pack.lr_decay_length
 norm_acc_length = optimizer_parameters_pack.norm_acc_length
 grad_limit = optimizer_parameters_pack.grad_limit
 
-contact_distance = data_parameters_pack.contact_distance
+pp_contact_distance = data_parameters_pack.pp_contact_distance
+pm_contact_distance = data_parameters_pack.pm_contact_distance
 
 time = utils.get_time()
 load_path = './load_network/'
@@ -584,7 +585,7 @@ def test_cycle(test_set : dataset.gns_dataset, graph : gm.Graph, plot_flag = Fal
 
             raw_data_pack = dc_replace(raw_data_pack, particle_id = particle_id_roll)
 
-        data_pack = test_set.update_data(raw_data_pack, contact_distance)
+        data_pack = test_set.update_data(raw_data_pack, pp_contact_distance, pm_contact_distance)
 
         network_output, loss = graph.forward(data_pack)
 
@@ -847,12 +848,12 @@ def grid_test_cycle(test_set, graph, plot_flag, test_sequence_idx, max_particles
         print(f"Step {i}: Grids={len(adaptive_boxes)} (Overlapping)")
 
         for (xl, xr, yl, yr, zl, zr) in adaptive_boxes:
-            sliced_raw_data_pack, particle_idx = test_set.build_tiled_raw_data(raw_data_pack, (xl, xr), (yl, yr), (zl, zr), contact_distance)
+            sliced_raw_data_pack, particle_idx = test_set.build_tiled_raw_data(raw_data_pack, (xl, xr), (yl, yr), (zl, zr), pp_contact_distance, pm_contact_distance)
 
             if sliced_raw_data_pack.particle_pos.shape[0] == 0:
                 continue
 
-            data_pack = test_set.update_data(sliced_raw_data_pack, contact_distance)
+            data_pack = test_set.update_data(sliced_raw_data_pack, pp_contact_distance, pm_contact_distance)
 
             network_output = graph.forward(data_pack, train_flag = False, grid_flag = True)
 

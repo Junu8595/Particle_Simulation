@@ -343,7 +343,7 @@ def build_edge_local_frame_3d(pos,
         c_degenerate_mask,
     )
 
-def build_boundary_edge(cells, particle_pos, mesh_pos, particle_indices, mesh_node_type, mesh_vel, device, contact_distance):
+def build_boundary_edge(cells, particle_pos, mesh_pos, particle_indices, mesh_node_type, mesh_vel, device, pm_contact_distance):
 
     num_interaction_hopper = 5
     num_interaction_roller1 = 5
@@ -546,9 +546,9 @@ def build_boundary_edge(cells, particle_pos, mesh_pos, particle_indices, mesh_no
         dmink_roll1, r1_indices = torch.topk(dists[:, roll1_mask], k = num_interaction_roller1, dim=1, largest=False, sorted=False) # (num_roll1, num_interaction)
         dmink_roll2, r2_indices = torch.topk(dists[:, roll2_mask], k = num_interaction_roller2, dim=1, largest=False, sorted=False) # (num_roll2, num_interaction)
 
-        hop_particle = torch.where(dmink_hopper <= torch.tensor(contact_distance, device=device)) # hop_particle[0] : dim=0의 idx [1] : dim=1의 idx
-        roll1_particle = torch.where(dmink_roll1 <= torch.tensor(contact_distance, device=device))
-        roll2_particle = torch.where(dmink_roll2 <= torch.tensor(contact_distance, device=device))
+        hop_particle = torch.where(dmink_hopper <= torch.tensor(pm_contact_distance, device=device)) # hop_particle[0] : dim=0의 idx [1] : dim=1의 idx
+        roll1_particle = torch.where(dmink_roll1 <= torch.tensor(pm_contact_distance, device=device))
+        roll2_particle = torch.where(dmink_roll2 <= torch.tensor(pm_contact_distance, device=device))
 
         hop_mask = torch.isin(hop_particle[0], particle_indices)
         hopper_receiver = hop_particle[0][hop_mask]

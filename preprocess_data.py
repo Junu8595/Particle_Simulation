@@ -44,7 +44,7 @@ def main():
             if i % 100 == 0:
                 print(f"Skip {i}/{dataset_length} (already exists)")
             continue
-        data_pack = data_set.get_data(i, data_parameters_pack.contact_distance, rotate_flag=False)
+        data_pack = data_set.get_data(i, data_parameters_pack.pp_contact_distance, data_parameters_pack.pm_contact_distance, rotate_flag=False)
         torch.save(data_pack, out_path)
         if i % 100 == 0:
             print(f"Baked {i}/{dataset_length}...")

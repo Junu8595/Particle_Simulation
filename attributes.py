@@ -28,7 +28,8 @@ def attribute(device):
     
 
     training_noise = 0.0003
-    contact_distance = 0.75
+    pp_contact_distance = 0.75
+    pm_contact_distance = 2.0
     gravity_y = -0.01150469  # Y축 중력 상수 (전체 baked data Y-acc mean, ~11M particle samples)
 
     lr = 1e-4
@@ -46,8 +47,8 @@ def attribute(device):
     TestingParameterPack = namedtuple('testingparameterpack', ['monitor_interval','test_interval','test_length','test_sequence_idx'])
     testingparameterpack = TestingParameterPack(monitor_interval,test_interval,test_length,test_sequence_idx)
 
-    DataParameterPack = namedtuple('dataparameterpack', ['ds_path','training_path','testing_path', 'calculix_path', 'training_noise','contact_distance', 'num_history', 'gravity_y'])
-    dataparameterpack = DataParameterPack(ds_path,training_path,testing_path,calculix_path,training_noise,contact_distance, num_history, gravity_y)
+    DataParameterPack = namedtuple('dataparameterpack', ['ds_path','training_path','testing_path', 'calculix_path', 'training_noise','pp_contact_distance', 'pm_contact_distance', 'num_history', 'gravity_y'])
+    dataparameterpack = DataParameterPack(ds_path,training_path,testing_path,calculix_path,training_noise,pp_contact_distance, pm_contact_distance, num_history, gravity_y)
 
     OptimizerParameterPack = namedtuple('optimizerparameterpack', ['lr','decay_offset','secondary_decay_offset','lr_decay_length','norm_acc_length','grad_limit'])
     optimizerparameterpack = OptimizerParameterPack(lr, decay_offset, secondary_decay_offset, lr_decay_length, norm_acc_length, grad_limit)
